@@ -1,0 +1,44 @@
+name: Deployment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deployment:
+    needs: info
+    runs-on: [self-hosted, media]
+    environment: Media
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Verify environment
+        run: |
+          (diff -wB <(grep -vE '^\s*#' /opt/deployment-specific-files/.env | cut -d '=' -f 1 | sort) \
+          <(grep -vE '^\s*#' .env.sample | cut -d '=' -f 1 | sort)) ||\
+          (echo "Environment variables mismatch" &&\
+          echo "Update /opt/deployment-specific-files/.env on the host or .env.sample in your branch" &&\
+          exit 1)
+
+      - name: Copy configuration
+        run: |
+          cp -f /opt/deployment-specific-files/.env ./
+
+      - name: Build
+        run: docker-compose build
+
+      - name: Copy everything to /orbitar_media
+        run: |
+          mkdir -p /orbitar_media
+
+          # Include dot files in *
+          shopt -s dotglob         
+
+          rm -rf /orbitar_media/*
+          cp -r ./* /orbitar_media
+
+          shopt -u dotglob
+
+      - name: Deploy
+        working-directory: /orbitar_media
+        run: docker-compose up -d
