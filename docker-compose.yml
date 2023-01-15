@@ -1,0 +1,33 @@
+version: '3.9'
+
+services:
+  caddy:
+    image: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      SERVER_DOMAIN: ${SERVER_DOMAIN}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - pictshare
+
+  pictshare:
+    build:
+      context: pictshare
+    restart: unless-stopped
+    volumes:
+      - pictshare_data:/var/www/data
+
+volumes:
+  caddy_data:
+  caddy_config:
+  pictshare_data:
+    driver: local
+    driver_opts:
+        type: none
+        o: bind
+        device: ${DATA_DIR}

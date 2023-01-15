@@ -1,0 +1,3 @@
+http://{$SERVER_DOMAIN} {
+  reverse_proxy http://pictshare:80
+}
