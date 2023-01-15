@@ -24,6 +24,7 @@ services:
     restart: unless-stopped
     environment:
       HASH_DIMS_AES_KEY: ${HASH_DIMS_AES_KEY}
+      CONTENTCONTROLLERS: "IMAGE,VIDEO"
     volumes:
       - pictshare_data:/var/www/data
 
