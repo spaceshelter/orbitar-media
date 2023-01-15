@@ -1,4 +1,4 @@
-<?php 
+<?php
 spl_autoload_register('autoload');
 
 //disable output buffering
@@ -10,7 +10,7 @@ if(!defined('FFMPEG_BINARY'))
     define('FFMPEG_BINARY',ROOT.DS.'bin'.DS.'ffmpeg');
 
 /**
- * The Architect function is the main controller 
+ * The Architect function is the main controller
  * who will decide what to do with any given URL
  * by feeding it to the other controllers
  */
@@ -49,7 +49,7 @@ function architect($url)
             if(!$sc)
                 $sc = getStorageControllers();
             foreach($sc as $contr)
-            {                    
+            {
                 $c = new $contr();
 
                 if($c->isEnabled()===true && $c->hashExists($el))
@@ -58,7 +58,7 @@ function architect($url)
                     $c->pullFile($hash,ROOT.DS.'tmp'.DS.$hash);
                     if(!file_exists(ROOT.DS.'tmp'.DS.$hash)) continue;
                     storeFile(ROOT.DS.'tmp'.DS.$hash,$hash,true);
-                    
+
                     break; // we break here because we already have the file. no need to check other storage controllers
                 }
                 else if($c->isEnabled()===true && defined('ENCRYPTION_KEY') && ENCRYPTION_KEY !='' && $c->hashExists($el.'.enc')) //this is an encrypted file. Let's decrypt it
@@ -76,7 +76,7 @@ function architect($url)
                     break; // we break here because we already have the file. no need to check other storage controllers
                 }
             }
-        } 
+        }
     }
 
 
@@ -104,12 +104,12 @@ function architect($url)
                 }
             }
         }
-        
-        
+
+
         //Now let's check the extension to find out which controller will be handling this request
         $extension = pathinfo($hash, PATHINFO_EXTENSION);
 
-        
+
         foreach(loadAllContentControllers(true) as $cc)
         {
             if(in_array($extension,(new $cc)->getRegisteredExtensions()))
@@ -166,7 +166,7 @@ function storageControllerUpload($hash)
                 }
             }
         }
-            
+
     }
 
     return $allgood;
@@ -177,7 +177,7 @@ function stringInFile($string,$file)
     $handle = fopen($file, 'r');
     while (($line = fgets($handle)) !== false) {
         $line=trim($line);
-        if($line==$string) return true;  
+        if($line==$string) return true;
     }
     fclose($handle);
     return false;
@@ -191,6 +191,28 @@ function getNewHash($type,$length=10)
         if(!isExistingHash($hash)) return $hash;
         $length++;
 	}
+}
+
+function base62_encode($str) {
+    return gmp_strval(gmp_init(bin2hex($str), 16), 62);
+}
+
+function getNewCryptoHash($key, $type, $width, $height)
+{
+    while(1)
+    {
+        $algo = 'aes-256-cbc';
+        $iv = openssl_random_pseudo_bytes(8);
+        $metadata = $width . ':' . $height . ':' . $type;
+
+        # note: $iv is doubled to shorten the resulting hash
+        #  (tradeoff between security and length)
+        $encryptedMetadata = openssl_encrypt($metadata, $algo, $key, $options = OPENSSL_RAW_DATA, $iv . $iv);
+
+        # concat iv and encrypted metadata and encode to base62
+        $hash =  base62_encode($iv . $encryptedMetadata) . '.' . $type;
+        if(!isExistingHash($hash)) return $hash;
+    }
 }
 
 function isExistingHash($hash)
@@ -247,7 +269,7 @@ function sizeStringToWidthHeight($size)
         $maxwidth = $size;
         $maxheight = $size;
     }
-	
+
 	return array('width'=>$maxwidth,'height'=>$maxheight);
 }
 
@@ -277,7 +299,7 @@ function serveFile($filename, $filename_output = false, $mime = 'application/oct
     // Content-Range header for byte offsets
     if (isset($_SERVER['HTTP_RANGE']) && preg_match('%bytes=(\d+)-(\d+)?%i', $_SERVER['HTTP_RANGE'], $match))
     {
-        $byte_offset = (int) $match[1];//Offset signifies where we should begin to read the file            
+        $byte_offset = (int) $match[1];//Offset signifies where we should begin to read the file
         if (isset($match[2]))//Length is for how long we should read the file according to the browser, and can never go beyond the file size
         {
             $filesize_bytes = min((int) $match[2], $filesize_bytes - $byte_offset);
@@ -367,13 +389,13 @@ function getTypeOfFile($url)
 		$a2 = explode('/', $type);
 		$type = $a2[1];
     }
-    
+
     if($type=='octet-stream')
         if((new VideoController())->isProperMP4($url)) return 'mp4';
     if($type=='mp4')
         if(!(new VideoController())->isProperMP4($url))
 		    return false;
-	
+
 	return $type;
 }
 
@@ -407,7 +429,7 @@ function getUserIP()
 	$client  = @$_SERVER['HTTP_CLIENT_IP'];
 	$forward = @$_SERVER['HTTP_X_FORWARDED_FOR'];
 	$remote  = $_SERVER['REMOTE_ADDR'];
-	
+
     if(strpos($forward,','))
     {
         $a = explode(',',$forward);
@@ -460,7 +482,7 @@ function isSize($var)
 	if(is_numeric($var)) return true;
 	$a = explode('x',$var);
 	if(count($a)!=2 || !is_numeric($a[0]) || !is_numeric($a[1])) return false;
-	
+
 	return true;
 }
 
@@ -519,22 +541,22 @@ function getAllContentFiletypes()
     return $types;
 }
 
-function rrmdir($dir) { 
+function rrmdir($dir) {
     chmod($dir, 0777);
-    if (is_dir($dir)) { 
-      $objects = scandir($dir); 
-      foreach ($objects as $object) { 
-        if ($object != "." && $object != "..") { 
+    if (is_dir($dir)) {
+      $objects = scandir($dir);
+      foreach ($objects as $object) {
+        if ($object != "." && $object != "..") {
           if (is_dir($dir."/".$object))
             rrmdir($dir."/".$object);
           else
           {
-            unlink($dir."/".$object); 
+            unlink($dir."/".$object);
           }
-        } 
+        }
       }
-      rmdir($dir); 
-    } 
+      rmdir($dir);
+    }
   }
 
 function storeFile($srcfile,$hash,$deleteoriginal=false)
@@ -542,7 +564,7 @@ function storeFile($srcfile,$hash,$deleteoriginal=false)
     if(is_dir(ROOT.DS.'data'.DS.$hash) && file_exists(ROOT.DS.'data'.DS.$hash.DS.$hash)) return;
     mkdir(ROOT.DS.'data'.DS.$hash);
 	$file = ROOT.DS.'data'.DS.$hash.DS.$hash;
-	
+
     copy($srcfile, $file);
     if($deleteoriginal===true)
         unlink($srcfile);
@@ -554,7 +576,7 @@ function storeFile($srcfile,$hash,$deleteoriginal=false)
     $fh = fopen(ROOT.DS.'data'.DS.$hash.DS.'deletecode', 'w');
 	fwrite($fh, $deletecode);
 	fclose($fh);
-       
+
     if(defined('LOG_UPLOADER') && LOG_UPLOADER)
 	{
 		$fh = fopen(ROOT.DS.'data'.DS.'uploads.csv', 'a');
@@ -584,7 +606,7 @@ function deleteHash($hash)
     foreach($sc as $contr)
     {
         $c = new $contr();
-        if($c->isEnabled()===true && $c->hashExists($hash)) 
+        if($c->isEnabled()===true && $c->hashExists($hash))
         {
             $c->deleteFile($hash);
         }

@@ -4,10 +4,10 @@
 
 _maxUploadSize() {
     echo "[i] Setting uploadsize to ${MAX_UPLOAD_SIZE}M"
-	
+
 	sed -i "/post_max_size/c\post_max_size=${MAX_UPLOAD_SIZE}M" /etc/php7/php.ini
 	sed -i "/upload_max_filesize/c\upload_max_filesize=${MAX_UPLOAD_SIZE}M" /etc/php7/php.ini
-    
+
 	sed -i -e "s/50M/${MAX_UPLOAD_SIZE}M/g" /etc/nginx/http.d/default.conf
 
     MAX_RAM=$((MAX_UPLOAD_SIZE + 30)) # 30megs more than the upload size
@@ -36,6 +36,7 @@ _buildConfig() {
     echo "define('SHOW_ERRORS', ${SHOW_ERRORS:-false});"
     echo "define('JPEG_COMPRESSION', ${JPEG_COMPRESSION:-90});"
     echo "define('PNG_COMPRESSION', ${PNG_COMPRESSION:-6});"
+    echo "define('HASH_DIMS_AES_KEY', '${HASH_DIMS_AES_KEY:-}');"
     echo "define('ALT_FOLDER', '${ALT_FOLDER:-}');"
     echo "define('S3_BUCKET', '${S3_BUCKET:-}');"
     echo "define('S3_ACCESS_KEY', '${S3_ACCESS_KEY:-}');"

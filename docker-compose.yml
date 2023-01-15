@@ -14,11 +14,16 @@ services:
       - caddy_config:/config
     depends_on:
       - pictshare
+    # Default caddy command borrowed from https://github.com/caddyserver/caddy-docker/blob/master/Dockerfile.tmpl
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--watch"]
+
 
   pictshare:
     build:
       context: pictshare
     restart: unless-stopped
+    environment:
+      HASH_DIMS_AES_KEY: ${HASH_DIMS_AES_KEY}
     volumes:
       - pictshare_data:/var/www/data
 

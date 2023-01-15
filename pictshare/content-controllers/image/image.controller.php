@@ -1,4 +1,4 @@
-<?php 
+<?php
 
 /**
  * @Todo:
@@ -36,7 +36,14 @@ class ImageController implements ContentController
 
         if($hash===false)
         {
-            $hash = getNewHash($ext,6);
+            if (defined('HASH_DIMS_AES_KEY')) {
+                $imsize = getimagesize($tmpfile);
+                $w = $imsize[0];
+                $h = $imsize[1];
+                $hash = getNewCryptoHash(HASH_DIMS_AES_KEY, $ext, $w, $h);
+            } else {
+                $hash = getNewHash($ext,6);
+            }
         }
         else
         {
@@ -47,7 +54,7 @@ class ImageController implements ContentController
         }
 
         storeFile($tmpfile,$hash,true);
-        
+
         return array('status'=>'ok','hash'=>$hash,'url'=>URL.$hash);
     }
 
@@ -142,7 +149,7 @@ class ImageController implements ContentController
                             if(!file_exists($mp4path))
                                 $this->gifToMP4($path,$mp4path);
                             $path = $mp4path;
-                            
+
                                 if(in_array('raw',$url))
                                 (new VideoController())->serveMP4($path,$hash);
                                 else if(in_array('preview',$url))
@@ -152,7 +159,7 @@ class ImageController implements ContentController
                                     {
                                         (new VideoController())->saveFirstFrameOfMP4($path,$preview);
                                     }
-                        
+
                                     header ("Content-type: image/jpeg");
                                     readfile($preview);
                                     exit;
@@ -184,14 +191,14 @@ class ImageController implements ContentController
                 $this->saveObjOfImage($im,$newpath,$type);
             }
             $path = $newpath;
-            
+
         }
 
-        
+
         switch($type)
         {
             case 'jpeg':
-            case 'jpg': 
+            case 'jpg':
                 header ("Content-type: image/jpeg");
                 header ("Last-Modified: ".gmdate('D, d M Y H:i:s ', filemtime($path)) . 'GMT');
                 header ("ETag: $hash");
@@ -199,7 +206,7 @@ class ImageController implements ContentController
                 readfile($path);
             break;
 
-            case 'png': 
+            case 'png':
                 header ("Content-type: image/png");
                 header ("Last-Modified: ".gmdate('D, d M Y H:i:s ', filemtime($path)) . 'GMT');
                 header ("ETag: $hash");
@@ -207,7 +214,7 @@ class ImageController implements ContentController
                 readfile($path);
             break;
 
-            case 'gif': 
+            case 'gif':
                 header ("Content-type: image/gif");
                 header ("Last-Modified: ".gmdate('D, d M Y H:i:s ', filemtime($path)) . 'GMT');
                 header ("ETag: $hash");
@@ -215,7 +222,7 @@ class ImageController implements ContentController
                 readfile($path);
             break;
 
-            case 'webp': 
+            case 'webp':
                 header ("Content-type: image/webp");
                 header ("Last-Modified: ".gmdate('D, d M Y H:i:s ', filemtime($path)) . 'GMT');
                 header ("ETag: $hash");
@@ -234,13 +241,13 @@ class ImageController implements ContentController
 	{
 		$bin = escapeshellcmd(FFMPEG_BINARY);
 		$file = escapeshellarg($gifpath);
-		
+
 		if(!file_exists($target)) //simple caching.. have to think of something better
 		{
 			$cmd = "$bin -f gif -y -i $file -vcodec libx264 -an -profile:v baseline -level 3.0 -pix_fmt yuv420p -vf \"scale=trunc(iw/2)*2:trunc(ih/2)*2\" -f mp4 $target";
 			system($cmd);
 		}
-		
+
 		return $target;
 	}
 
@@ -249,15 +256,15 @@ class ImageController implements ContentController
         switch($type)
         {
             case 'jpeg':
-            case 'jpg': 
+            case 'jpg':
                 imagejpeg($im,$path,(defined('JPEG_COMPRESSION')?JPEG_COMPRESSION:90));
             break;
 
-            case 'png': 
+            case 'png':
                 imagepng($im,$path,(defined('PNG_COMPRESSION')?PNG_COMPRESSION:6));
             break;
 
-            case 'webp': 
+            case 'webp':
                 imagewebp($im,$path,(defined('WEBP_COMPRESSION')?WEBP_COMPRESSION:80));
             break;
         }

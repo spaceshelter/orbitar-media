@@ -1,4 +1,4 @@
-<?php 
+<?php
 
 class VideoController implements ContentController
 {
@@ -24,8 +24,8 @@ class VideoController implements ContentController
                 $this->resize($path,$newpath,$width);
             $path = $newpath;
         }
-        
-        
+
+
         if(in_array('raw',$url))
             $this->serveMP4($path,$hash);
         else if(in_array('preview',$url))
@@ -38,7 +38,7 @@ class VideoController implements ContentController
 
             header ("Content-type: image/jpeg");
             readfile($preview);
-            
+
         }
         else if(in_array('download',$url))
         {
@@ -64,7 +64,17 @@ class VideoController implements ContentController
     public function handleUpload($tmpfile,$hash=false)
     {
         if($hash===false)
-            $hash = getNewHash('mp4',6);
+            if (defined('HASH_DIMS_AES_KEY')) {
+                $dimensions = $this->getVideoDimensions($tmpfile);
+                if (!$dimensions) {
+                    return array('status' => 'err', 'hash' => $hash, 'reason' => 'Can\'t get video dimensions');
+                }
+                $w = $dimensions['width'];
+                $h = $dimensions['height'];
+                $hash = getNewCryptoHash(HASH_DIMS_AES_KEY, 'mp4', $w, $h);
+            } else {
+                $hash = getNewHash('mp4',6);
+            }
         else
         {
             $hash.='.mp4';
@@ -76,7 +86,7 @@ class VideoController implements ContentController
 
         if(!$this->rightEncodedMP4($file))
             system("nohup php ".ROOT.DS.'tools'.DS.'re-encode_mp4.php force '.$hash." > /dev/null 2> /dev/null &");
-        
+
         return array('status'=>'ok','hash'=>$hash,'url'=>URL.$hash);
     }
 
@@ -86,10 +96,10 @@ class VideoController implements ContentController
     {
         if ($fp = fopen($path, "rb"))
         {
-            $size = filesize($path); 
+            $size = filesize($path);
             $length = $size;
-            $start = 0;  
-            $end = $size - 1; 
+            $start = 0;
+            $end = $size - 1;
             header('Content-type: video/mp4');
             header('Cache-control: public, max-age=31536000');
             header("Accept-Ranges: 0-$length");
@@ -142,13 +152,11 @@ class VideoController implements ContentController
 		$file = escapeshellarg($filename);
 		$tmp = ROOT.DS.'tmp'.DS.md5(time()+rand(1,10000)).'.'.rand(1,10000).'.log';
         $bin = escapeshellcmd(FFMPEG_BINARY);
-        
-        
-		
+
 		$cmd = "$bin -i $file > $tmp 2>> $tmp";
 
         system($cmd);
-        
+
         //var_dump(system( "$bin -i $file "));
 
 		$answer = file($tmp);
@@ -194,22 +202,49 @@ class VideoController implements ContentController
 		$bin = escapeshellcmd(FFMPEG_BINARY);
 		$file = escapeshellarg($path);
 		$cmd = "$bin -y -i $file -vframes 1 -f image2 $target";
-		
+
 		system($cmd);
     }
-    
+
+    function getVideoDimensions($path)
+    {
+        $bin = escapeshellcmd(FFMPEG_BINARY);
+        # replace ffmpg suffix with ffprobe
+        $bin = preg_replace('/ffmpeg$/', 'ffprobe', $bin);
+        $file = escapeshellarg($path);
+        /*
+         * ffprobe -v error -select_streams v -show_entries stream=width,height -of csv=p=0:s=x input.m4v
+         *   1280x720
+         */
+        $cmd = "$bin -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 $file";
+        $output = shell_exec($cmd);
+
+        # extract width and height using regex
+        $matches = array();
+        preg_match('/^(\d+)x(\d+)[\s\n]*$/', $output, $matches);
+
+        # validate
+        if (count($matches) != 3) {
+            return false;
+        }
+        return array(
+            'width' => $matches[1],
+            'height' => $matches[2]
+        );
+    }
+
     function resize($in,$out,$width)
 	{
 		$file = escapeshellarg($in);
 		$tmp = '/dev/null';
 		$bin = escapeshellcmd(FFMPEG_BINARY);
-		
+
 		$addition = '-c:v libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p';
         $height = 'trunc(ow/a/2)*2';
-		
+
 		$cmd = "$bin -i $file -y -vf scale=\"$width:$height\" $addition $out";
 		system($cmd);
-		
+
 		return (file_exists($out) && filesize($out)>0);
 	}
 }
