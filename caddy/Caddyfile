@@ -1,3 +1,20 @@
 http://{$SERVER_DOMAIN} {
-  reverse_proxy http://pictshare:80
+    route {
+        # serve static files if they exist
+        file_server * {
+            root /static/
+            index index.html
+            pass_thru
+        }
+
+        # disallow all POST requests that dont have valid auth
+        @hasAuth {
+            not header authorization "Client-ID {$CLIENT_ID}"
+            method POST
+        }
+        respond @hasAuth 403
+
+        # fallback to pictshare
+        reverse_proxy http://pictshare:80
+    }
 }
