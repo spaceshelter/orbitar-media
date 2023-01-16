@@ -2,7 +2,7 @@
 
 /**
  * Config needed
- * 
+ *
  * S3_BUCKET
  * S3_ACCESS_KEY
  * S3_SECRET_KEY
@@ -14,30 +14,33 @@ class S3Storage implements StorageController
 	private $s3;
 	function connect(){
 		require_once(ROOT.DS.'storage-controllers'.DS.'s3'.DS.'aws-autoloader.php');
-		$this->s3 = new Aws\S3\S3Client([
-			'version' => 'latest',
-			'region'  => (defined('S3_REGION') && S3_REGION ?S3_REGION:'us-east-1'),
-			'endpoint' => S3_ENDPOINT,
-			'use_path_style_endpoint' => true,
-			'credentials' => [
-					'key'    => S3_ACCESS_KEY,
-					'secret' => S3_SECRET_KEY,
-				],
-		]);
+        $client_args = [
+            'version' => 'latest',
+            'region' => (defined('S3_REGION') && S3_REGION ? S3_REGION : 'us-east-1'),
+            'use_path_style_endpoint' => true,
+            'credentials' => [
+                'key' => S3_ACCESS_KEY,
+                'secret' => S3_SECRET_KEY,
+            ],
+        ];
+        if (defined('S3_ENDPOINT') && trim(S3_ENDPOINT) != '') {
+            $client_args['endpoint'] = S3_ENDPOINT;
+        }
+        $this->s3 = new Aws\S3\S3Client($client_args);
 	}
 
     function isEnabled()
     {
         return (defined('S3_BUCKET') && S3_BUCKET);
     }
-    
+
     function hashExists($hash)
     {
 		if(!$this->s3)$this->connect();
 
 		return $this->s3->doesObjectExist(S3_BUCKET,$hash);
 	}
-	
+
 	function getItems($dev=false)
 	{
 		if(!$this->s3)$this->connect();
@@ -86,7 +89,7 @@ class S3Storage implements StorageController
     function pushFile($source,$hash)
     {
 		if(!$this->s3)$this->connect();
-		
+
 		$this->s3->putObject([
 			'Bucket' => S3_BUCKET,
 			'Key'    => $hash,

@@ -25,6 +25,10 @@ services:
     environment:
       HASH_DIMS_AES_KEY: ${HASH_DIMS_AES_KEY}
       CONTENTCONTROLLERS: "IMAGE,VIDEO"
+      S3_BUCKET: ${S3_BUCKET}
+      S3_REGION: ${S3_REGION}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
     volumes:
       - pictshare_data:/var/www/data
 
