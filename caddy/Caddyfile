@@ -10,7 +10,7 @@ http://{$SERVER_DOMAIN} {
         # disallow all POST requests that dont have valid auth
         @hasAuth {
             not header authorization "Client-ID {$CLIENT_ID}"
-            method POST
+            path /api/*
         }
         respond @hasAuth 403
 
