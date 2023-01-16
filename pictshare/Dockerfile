@@ -38,13 +38,13 @@ RUN curl -sS https://getcomposer.org/installer | /usr/bin/php -- --install-dir=/
 RUN mkdir -p /var/www
 WORKDIR /var/www
 
-ADD . /var/www/.
+COPY . /var/www/.
 
-ADD docker/rootfs/start.sh /etc/start.sh
+COPY docker/rootfs/start.sh /etc/start.sh
 RUN chmod +x /etc/start.sh
 
 # nginx stuff
-ADD docker/rootfs/nginx.conf /etc/nginx/http.d/default.conf
+COPY docker/rootfs/nginx.conf /etc/nginx/http.d/default.conf
 RUN mkdir -p /run/nginx
 RUN mkdir -p /var/log/nginx
 RUN sed -i 's/nobody/nginx/g' /etc/php7/php-fpm.d/www.conf
