@@ -210,7 +210,7 @@ function getNewCryptoHash($key, $type, $width, $height)
         $encryptedMetadata = openssl_encrypt($metadata, $algo, $key, $options = OPENSSL_RAW_DATA, $iv . $iv);
 
         # concat iv and encrypted metadata and encode to base62
-        $hash =  base62_encode($iv . $encryptedMetadata) . '.' . $type;
+        $hash = base62_encode($encryptedMetadata . $iv) . '.' . $type;
         if(!isExistingHash($hash)) return $hash;
     }
 }
