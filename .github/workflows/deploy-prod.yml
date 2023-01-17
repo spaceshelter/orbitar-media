@@ -40,4 +40,4 @@ jobs:
 
       - name: Deploy
         working-directory: /orbitar_media
-        run: docker-compose up -d --build
+        run: docker-compose up -d --build --force-recreate
