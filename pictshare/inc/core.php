@@ -201,6 +201,7 @@ function getNewCryptoHash($key, $type, $width, $height)
 {
     while(1)
     {
+        $v = 1; # protocol version
         $algo = 'aes-256-cbc';
         $iv = openssl_random_pseudo_bytes(8);
         $metadata = $width . ':' . $height . ':' . $type;
@@ -210,7 +211,7 @@ function getNewCryptoHash($key, $type, $width, $height)
         $encryptedMetadata = openssl_encrypt($metadata, $algo, $key, $options = OPENSSL_RAW_DATA, $iv . $iv);
 
         # concat iv and encrypted metadata and encode to base62
-        $hash = base62_encode($encryptedMetadata . $iv) . '.' . $type;
+        $hash = base62_encode($v . $encryptedMetadata . $iv) . '.' . $type;
         if(!isExistingHash($hash)) return $hash;
     }
 }
