@@ -27,10 +27,10 @@ $url = trim($_REQUEST['url']);
 
 if(!$url || !startsWith($url, 'http'))
     exit(json_encode(array('status'=>'err','reason'=>'Invalid URL')));
-    
+
 //@todo: let user decide max upload size via config and set php_ini var
-else if(remote_filesize($url)*0.000001 > 20)
-    exit(json_encode(array('status'=>'err','reason'=>'File too big. 20MB max')));
+else if(defined('MAX_UPLOAD_SIZE') && remote_filesize($url)*0.000001 > MAX_UPLOAD_SIZE)
+    exit(json_encode(array('status'=>'err','reason'=>'File too big. '.MAX_UPLOAD_SIZE.'mb max')));
 
 $name = basename($url);
 $tmpfile = ROOT.DS.'tmp'.DS.$name;
@@ -76,7 +76,7 @@ if($answer['hash'] && $answer['status']=='ok')
             $answer['delete_code'] = getDeleteCodeOfHash($answer['hash']);
             $answer['delete_url'] = URL.'delete_'.getDeleteCodeOfHash($answer['hash']).'/'.$answer['hash'];
         }
-            
+
 
         storageControllerUpload($answer['hash']);
     }
@@ -95,7 +95,7 @@ if($answer['hash'] && $answer['status']=='ok')
         storageControllerUpload($answer['hash']);
     }
 
-    echo json_encode($answer);  
+    echo json_encode($answer);
 
 
 

@@ -36,6 +36,7 @@ _buildConfig() {
     echo "define('SHOW_ERRORS', ${SHOW_ERRORS:-false});"
     echo "define('JPEG_COMPRESSION', ${JPEG_COMPRESSION:-90});"
     echo "define('PNG_COMPRESSION', ${PNG_COMPRESSION:-6});"
+    echo "define('MAX_UPLOAD_SIZE', ${MAX_UPLOAD_SIZE:-100});"
     echo "define('HASH_DIMS_AES_KEY', '${HASH_DIMS_AES_KEY:-}');"
     echo "define('ALT_FOLDER', '${ALT_FOLDER:-}');"
     echo "define('S3_BUCKET', '${S3_BUCKET:-}');"
