@@ -1,4 +1,4 @@
-http://{$SERVER_DOMAIN} {
+http://{$SERVER_DOMAIN}, {$SERVER_DOMAIN}, origin.{$SERVER_DOMAIN} {
     route {
         # serve static files if they exist
         file_server * {
