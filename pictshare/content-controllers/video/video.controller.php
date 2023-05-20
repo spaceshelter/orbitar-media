@@ -37,6 +37,10 @@ class VideoController implements ContentController
             }
 
             header ("Content-type: image/jpeg");
+            header ("Last-Modified: ".gmdate('D, d M Y H:i:s ', filemtime($preview)) . 'GMT');
+            header ("ETag: $hash");
+            header('Cache-control: public, max-age=31536000');
+
             readfile($preview);
 
         }
