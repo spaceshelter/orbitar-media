@@ -5,6 +5,7 @@ RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 
 RewriteRule ^coub/(\w+)$ coub/coub.php?hash=$1 [QSA,PT,L]
+RewriteRule ^vimeo/(\w+)$ vimeo/vimeo.php?hash=$1 [QSA,PT,L]
 RewriteRule ^(.*)$ index.php?url=$1 [QSA,PT,L]
 
 </IfModule>
