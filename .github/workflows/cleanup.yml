@@ -1,0 +1,43 @@
+name: Disk cleanup
+
+on:
+  schedule:
+    # runs every monday
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: [self-hosted, media]
+    environment: Media
+
+    steps:
+      - name: Import environment variables from a file
+        uses: actions/github-script@v2
+        with:
+          script: |
+            const env = parseEnv('/opt/deployment-specific-files/.env');
+            Object.entries(env).forEach(x => core.exportVariable(...x)); // current job-level env
+            return env;
+
+      - name: Disk cleanup until required space is available
+        env:
+          TARGET_DIR: ${env.DATA_DIR}
+        run: |
+          REQUIRED_SPACE=20  # Required space in GB
+
+          counter=0 # Counter to prevent infinite loop
+          while [ $counter -lt 3 ]; do
+            AVAILABLE_SPACE=$(df -BG --output=avail "$TARGET_DIR" | tail -n 1 | tr -dc '0-9')
+            echo "Available disk space: $AVAILABLE_SPACE GB"
+          
+            if (( AVAILABLE_SPACE >= REQUIRED_SPACE )); then
+              echo "Required space is available. Cleanup is not required."
+              break
+            else
+              echo "Cleaning up the least recently accessed directory..."
+              ls -1turF "$TARGET_DIR" | grep "/$" | sed 's/\/$//' | head -n 1 | xargs -I {} echo "$TARGET_DIR/{}"
+            fi
+            
+            counter=$((counter+1))
+          done
