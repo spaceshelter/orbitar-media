@@ -18,7 +18,7 @@ jobs:
 
       - name: Disk cleanup until required space is available
         run: |
-          REQUIRED_SPACE=21 # Required space in GB
+          REQUIRED_SPACE=50 # Required space in GB
           TARGET_DIR="$DATA_DIR" # Target directory to clean up
 
           counter=0 # Counter to prevent infinite loop
