@@ -11,5 +11,5 @@ based on the (patched) [Pictshare](https://github.com/HaschekSolutions/pictshare
 ### Run locally:
 
 1. Add local domain to `/etc/hosts`, e.g. `127.0.0.1 orbitar.media.local` 
-2. Copy `.evn.sample` to `.env` and adjust values
-3. Run `docker-compose up -d`
+2. Copy `.env.sample` to `.env` and adjust values
+3. Run `docker compose up -d`

@@ -24,7 +24,7 @@ jobs:
           cp -f /opt/deployment-specific-files/.env ./
 
       - name: Build
-        run: docker-compose build
+        run: docker compose build
 
       - name: Copy everything to /orbitar_media
         run: |
@@ -40,4 +40,4 @@ jobs:
 
       - name: Deploy
         working-directory: /orbitar_media
-        run: docker-compose up -d --build --force-recreate
+        run: docker compose up -d --build --force-recreate
