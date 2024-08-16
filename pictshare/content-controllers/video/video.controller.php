@@ -1,5 +1,9 @@
 <?php
 
+define('MAX_CONCURRENT_VIDEO_HANDLERS',
+    getenv('MAX_CONCURRENT_VIDEO_HANDLERS') !== false ? (int) getenv('MAX_CONCURRENT_VIDEO_HANDLERS') : 4
+);
+
 class VideoController implements ContentController
 {
     //returns all extensions registered by this type of content
@@ -88,12 +92,25 @@ class VideoController implements ContentController
 
         $file = storeFile($tmpfile,$hash,true);
 
-        if(!$this->rightEncodedMP4($file))
+        if(!$this->rightEncodedMP4($file)) {
+            $conversionsRunningNow = $this->getCurrentNumberOfRunningConversions();
+            if ($conversionsRunningNow >= MAX_CONCURRENT_VIDEO_HANDLERS) {
+                return array('status'=>'err','hash'=>$hash,'reason'=>'System is busy, try again later');
+            }
             system("nohup php ".ROOT.DS.'tools'.DS.'re-encode_mp4.php force '.$hash." > /dev/null 2> /dev/null &");
+        }
 
         return array('status'=>'ok','hash'=>$hash,'url'=>URL.$hash);
     }
 
+    function getCurrentNumberOfRunningConversions()
+    {
+        $command = "ps aux | grep 're-encode_mp4.php' | grep -v grep | wc -l";
+        $output = null;
+        $return_var = null;
+        exec($command, $output, $return_var);
+        return intval($output[0]);
+    }
 
     //via gist: https://gist.github.com/codler/3906826
     function serveMP4($path,$hash)
