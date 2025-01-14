@@ -42,7 +42,7 @@ services:
     environment:
       REQUIRED_SPACE: ${REQUIRED_SPACE}
     volumes:
-      - ${DATA_DIR}:/var/lib/orbitar_media_data
+      - pictshare_data:/var/lib/orbitar_media_data
 
 volumes:
   caddy_data:
