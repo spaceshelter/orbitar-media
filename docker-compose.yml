@@ -40,7 +40,7 @@ services:
       context: cleanup-service
     restart: unless-stopped
     environment:
-      REQUIRED_SPACE: ${REQUIRED_SPACE}
+      REQUIRED_SPACE: ${REQUIRED_SPACE:-5}
     volumes:
       - pictshare_data:/var/lib/orbitar_media_data
 
