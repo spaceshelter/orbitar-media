@@ -20,7 +20,6 @@ services:
     # Default caddy command borrowed from https://github.com/caddyserver/caddy-docker/blob/master/Dockerfile.tmpl
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--watch"]
 
-
   pictshare:
     build:
       context: pictshare
@@ -35,6 +34,15 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY}
     volumes:
       - pictshare_data:/var/www/data
+
+  cleanup:
+    build:
+      context: cleanup-service
+    restart: unless-stopped
+    environment:
+      REQUIRED_SPACE: ${REQUIRED_SPACE:-5}
+    volumes:
+      - pictshare_data:/var/lib/orbitar_media_data
 
 volumes:
   caddy_data:
