@@ -35,6 +35,9 @@ if ($_FILES['file']["error"] == UPLOAD_ERR_OK)
     if($ehash && file_exists(ROOT.DS.'data'.DS.$ehash.DS.$ehash))
         exit(json_encode(array('status'=>'ok','hash'=>$ehash,'filetype'=>$type,'url'=>URL.$ehash)));
 
+    if(defined('MAX_UPLOAD_SIZE') && $_FILES['file']['size'] * 0.000001 > MAX_UPLOAD_SIZE)
+        exit(json_encode(array('status'=>'err','reason'=>'File too big. '.MAX_UPLOAD_SIZE.'mb max')));
+
     //cross check filetype for controllers
     //
     //image?
@@ -53,7 +56,7 @@ if ($_FILES['file']["error"] == UPLOAD_ERR_OK)
     {
         $answer = (new ImageController())->handleUpload($_FILES['file']['tmp_name'],$hash);
     }
-    
+
     //or, a text
     else if($type=='text')
     {
@@ -79,7 +82,7 @@ if ($_FILES['file']["error"] == UPLOAD_ERR_OK)
             $answer['delete_code'] = getDeleteCodeOfHash($answer['hash']);
             $answer['delete_url'] = URL.'delete_'.getDeleteCodeOfHash($answer['hash']).'/'.$answer['hash'];
         }
-            
+
 
         storageControllerUpload($answer['hash']);
     }
