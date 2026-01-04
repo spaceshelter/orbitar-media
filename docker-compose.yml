@@ -32,6 +32,7 @@ services:
       S3_REGION: ${S3_REGION}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY}
+      COUB_PROXY_URL: ${COUB_PROXY_URL:-}
     volumes:
       - pictshare_data:/var/www/data
 

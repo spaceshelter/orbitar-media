@@ -40,7 +40,12 @@ function cacheCoubResult($hash, $result) {
 }
 
 function fetchCoubThumbnailUrl($hash) {
-    $url = "https://coub.com/api/v2/coubs/" . $hash;
+    $proxyUrl = getenv('COUB_PROXY_URL');
+    if ($proxyUrl) {
+        $url = rtrim($proxyUrl, '/') . '/' . $hash;
+    } else {
+        $url = "https://coub.com/api/v2/coubs/" . $hash;
+    }
 
     $ctx = stream_context_create([
         'http' => [
