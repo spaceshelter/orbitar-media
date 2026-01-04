@@ -48,6 +48,8 @@ COPY docker/rootfs/nginx.conf /etc/nginx/http.d/default.conf
 RUN mkdir -p /run/nginx
 RUN mkdir -p /var/log/nginx
 RUN sed -i 's/nobody/nginx/g' /etc/php7/php-fpm.d/www.conf
+# Increase PHP-FPM workers (default is 5, too low for S3 blocking I/O)
+RUN sed -i 's/pm.max_children = 5/pm.max_children = 25/g' /etc/php7/php-fpm.d/www.conf
 
 # Since requests can trigger conversion, let's give the server enough time to respond
 RUN sed -i "/max_execution_time/c\max_execution_time=3600" /etc/php7/php.ini
