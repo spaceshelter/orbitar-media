@@ -109,6 +109,8 @@ function handleCoubRequest($hash) {
     }
 
     // Fetch from Coub API
+    $proxyUrl = getenv('COUB_PROXY_URL');
+    header("X-Coub-Proxy: " . ($proxyUrl ? "true" : "false"));
     $result = fetchCoubThumbnailUrl($hash);
 
     switch ($result['type']) {
