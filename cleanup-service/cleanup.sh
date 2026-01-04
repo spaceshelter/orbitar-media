@@ -13,7 +13,7 @@ while [ $counter -lt 100 ]; do
     break
   else
     echo "Cleaning up the least recently accessed directory..."
-    ls -1turF "/var/lib/orbitar_media_data" | grep "/$" | sed 's/\/$//' | head -n 100 | xargs -I {} rm -rf "/var/lib/orbitar_media_data/{}"
+    ls -1turF "/var/lib/orbitar_media_data" | grep "/$" | sed 's/\/$//' | grep -v '^coub_cache$' | head -n 100 | xargs -I {} rm -rf "/var/lib/orbitar_media_data/{}"
 
   fi
 
