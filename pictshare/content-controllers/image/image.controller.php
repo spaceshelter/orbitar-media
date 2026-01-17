@@ -24,9 +24,48 @@ class ImageController implements ContentController
             case 17: $ext = 'ico';break;  // ico
             case 18: $ext = 'webp';break; // webp
 
-            case 2: //we clean up exif data of JPGs so GPS and other data is removed
+            case 2: // JPEG - strip EXIF and auto-rotate based on EXIF orientation
+                // Read EXIF orientation BEFORE loading (imagecreatefromjpeg ignores it)
+                $orientation = 1;
+                if (function_exists('exif_read_data')) {
+                    $exif = @exif_read_data($tmpfile);
+                    if ($exif !== false && isset($exif['Orientation'])) {
+                        $orientation = $exif['Orientation'];
+                    }
+                }
+
                 $res = imagecreatefromjpeg($tmpfile);
-                imagejpeg($res, $tmpfile, (defined('JPEG_COMPRESSION')?JPEG_COMPRESSION:90));
+
+                // Apply transformation based on EXIF orientation
+                // Reference: https://exiftool.org/TagNames/EXIF.html
+                switch ($orientation) {
+                    case 2: // Horizontal flip
+                        imageflip($res, IMG_FLIP_HORIZONTAL);
+                        break;
+                    case 3: // 180° rotation
+                        $res = imagerotate($res, 180, 0);
+                        break;
+                    case 4: // Vertical flip
+                        imageflip($res, IMG_FLIP_VERTICAL);
+                        break;
+                    case 5: // 90° CCW + horizontal flip
+                        $res = imagerotate($res, 90, 0);
+                        imageflip($res, IMG_FLIP_HORIZONTAL);
+                        break;
+                    case 6: // 90° CW (common for portrait photos)
+                        $res = imagerotate($res, -90, 0);
+                        break;
+                    case 7: // 90° CW + vertical flip
+                        $res = imagerotate($res, -90, 0);
+                        imageflip($res, IMG_FLIP_VERTICAL);
+                        break;
+                    case 8: // 90° CCW
+                        $res = imagerotate($res, 90, 0);
+                        break;
+                    // case 1: Normal - no action needed
+                }
+
+                imagejpeg($res, $tmpfile, (defined('JPEG_COMPRESSION') ? JPEG_COMPRESSION : 90));
                 $ext = 'jpg';
             break;
 
