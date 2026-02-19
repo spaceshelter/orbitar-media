@@ -91,8 +91,8 @@ Three Docker containers orchestrated via docker-compose.yml:
                           │
 ┌─────────────────────────▼───────────────────────────────────┐
 │  Cleanup Service (cron microservice)                        │
-│  - Hourly job to free disk space                            │
-│  - Removes least recently accessed files when low on space  │
+│  - Runs every 15 minutes to free disk space                 │
+│  - Evicts oldest files by mtime (FIFO) when low on space    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -124,7 +124,7 @@ Key variables in `.env` (see `.env.sample`):
 | `DATA_DIR` | Host path for persistent data volume |
 | `HASH_DIMS_AES_KEY` | AES key for encoding dimensions in hash |
 | `S3_BUCKET/REGION/ACCESS_KEY/SECRET_KEY` | S3 backup configuration |
-| `REQUIRED_SPACE` | Minimum free GB before cleanup runs (default: 5) |
+| `REQUIRED_SPACE` | Minimum free GB before cleanup runs (default: 10) |
 
 ## CI/CD
 
