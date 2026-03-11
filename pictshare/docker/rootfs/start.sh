@@ -10,8 +10,8 @@ _maxUploadSize() {
 
 	sed -i -e "s/50M/${MAX_UPLOAD_SIZE}M/g" /etc/nginx/http.d/default.conf
 
-    MAX_RAM=$((MAX_UPLOAD_SIZE + 30)) # 30megs more than the upload size
-    echo "[i] Also changing memory limit of PHP to ${MAX_RAM}M"
+    MAX_RAM=${PHP_MEMORY_LIMIT:-$((MAX_UPLOAD_SIZE + 30))}
+    echo "[i] Setting PHP memory limit to ${MAX_RAM}M"
     sed -i -e "s/128M/${MAX_RAM}M/g" /etc/php7/php.ini
 	sed -i "/memory_limit/c\memory_limit=${MAX_RAM}M" /etc/php7/php.ini
 }
