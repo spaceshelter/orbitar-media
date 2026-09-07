@@ -274,6 +274,116 @@ function sizeStringToWidthHeight($size)
 	return array('width'=>$maxwidth,'height'=>$maxheight);
 }
 
+/**
+ * Strong ETag for a file on disk: inode, mtime and size (same recipe as Apache's default).
+ * A file that is rewritten in place (video normalisation, resize cache) gets a new tag,
+ * unlike the old scheme that used the immutable hash as the ETag.
+ */
+function fileETag($path)
+{
+    clearstatcache(true, $path);
+    return statETag(stat($path));
+}
+
+function statETag($st)
+{
+    return '"'.dechex($st['ino']).'-'.dechex($st['mtime']).'-'.dechex($st['size']).'"';
+}
+
+/**
+ * Sends ETag + Last-Modified for $path and answers conditional requests
+ * (If-None-Match / If-Modified-Since) with 304 Not Modified.
+ * Pass $st (a stat()/fstat() array) when the caller already holds the file open,
+ * so validators and body are guaranteed to describe the same inode.
+ * Returns the ETag so callers can evaluate If-Range against it.
+ */
+function sendFileValidators($path, $st = null)
+{
+    if($st === null)
+    {
+        clearstatcache(true, $path);
+        $st = stat($path);
+    }
+    $etag = statETag($st);
+    $mtime = $st['mtime'];
+    header('ETag: '.$etag);
+    header('Last-Modified: '.gmdate('D, d M Y H:i:s', $mtime).' GMT');
+
+    $notModified = false;
+    if(isset($_SERVER['HTTP_IF_NONE_MATCH']))
+    {
+        // weak comparison: W/"x" matches "x"
+        foreach(explode(',', $_SERVER['HTTP_IF_NONE_MATCH']) as $candidate)
+        {
+            $candidate = trim($candidate);
+            if($candidate === '*' || $candidate === $etag || $candidate === 'W/'.$etag)
+            {
+                $notModified = true;
+                break;
+            }
+        }
+    }
+    else if(isset($_SERVER['HTTP_IF_MODIFIED_SINCE']))
+    {
+        $since = strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE']);
+        if($since !== false && $mtime <= $since)
+            $notModified = true;
+    }
+
+    if($notModified)
+    {
+        header('HTTP/1.1 304 Not Modified');
+        header('Cache-Control: public, max-age=31536000');
+        exit;
+    }
+    return $etag;
+}
+
+/**
+ * RFC 7233 If-Range: the Range header must be ignored (and the whole file sent)
+ * when the validator the client holds no longer matches the file.
+ */
+function ifRangeMatches($etag, $mtime)
+{
+    if(!isset($_SERVER['HTTP_IF_RANGE'])) return true;
+    $v = trim($_SERVER['HTTP_IF_RANGE']);
+    if($v === '') return true;
+    if($v[0] === '"') return $v === $etag;
+    if(substr($v, 0, 2) === 'W/') return false; // weak validators never match for If-Range
+    $t = strtotime($v);
+    return $t !== false && $t === $mtime;
+}
+
+/**
+ * Parses a single-range "Range: bytes=..." header against a file of $size bytes.
+ * Returns array($start,$end) inclusive, null when the header should be ignored
+ * (malformed, or multi-range which we don't produce), or false when unsatisfiable (416).
+ */
+function parseByteRange($header, $size)
+{
+    if(!preg_match('/^\s*bytes\s*=\s*(.*)$/i', $header, $m)) return null;
+    $spec = trim($m[1]);
+    if($spec === '' || strpos($spec, ',') !== false) return null;
+    if(!preg_match('/^(\d*)-(\d*)$/', $spec, $m)) return null;
+    if($m[1] === '' && $m[2] === '') return null;
+
+    if($m[1] === '')
+    {
+        // suffix range: last N bytes
+        $len = (int)$m[2];
+        if($len === 0) return false;
+        $start = max(0, $size - $len);
+        $end = $size - 1;
+    }
+    else
+    {
+        $start = (int)$m[1];
+        $end = ($m[2] === '') ? $size - 1 : min((int)$m[2], $size - 1);
+    }
+    if($size === 0 || $start >= $size || $start > $end) return false;
+    return array($start, $end);
+}
+
 //
 // from: https://stackoverflow.com/questions/25975943/php-serve-mp4-chrome-provisional-headers-are-shown-request-is-not-finished-ye
 //

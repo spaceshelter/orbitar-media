@@ -199,9 +199,8 @@ class ImageController implements ContentController
                                         (new VideoController())->saveFirstFrameOfMP4($path,$preview);
                                     }
 
+                                    sendFileValidators($preview);
                                     header ("Content-type: image/jpeg");
-                                    header ("Last-Modified: ".gmdate('D, d M Y H:i:s ', filemtime($preview)) . 'GMT');
-                                    header ("ETag: $hash");
                                     header('Cache-control: public, max-age=31536000');
 
                                     readfile($preview);
@@ -242,33 +241,29 @@ class ImageController implements ContentController
         {
             case 'jpeg':
             case 'jpg':
+                sendFileValidators($path);
                 header ("Content-type: image/jpeg");
-                header ("Last-Modified: ".gmdate('D, d M Y H:i:s ', filemtime($path)) . 'GMT');
-                header ("ETag: $hash");
                 header('Cache-control: public, max-age=31536000');
                 readfile($path);
             break;
 
             case 'png':
+                sendFileValidators($path);
                 header ("Content-type: image/png");
-                header ("Last-Modified: ".gmdate('D, d M Y H:i:s ', filemtime($path)) . 'GMT');
-                header ("ETag: $hash");
                 header('Cache-control: public, max-age=31536000');
                 readfile($path);
             break;
 
             case 'gif':
+                sendFileValidators($path);
                 header ("Content-type: image/gif");
-                header ("Last-Modified: ".gmdate('D, d M Y H:i:s ', filemtime($path)) . 'GMT');
-                header ("ETag: $hash");
                 header('Cache-control: public, max-age=31536000');
                 readfile($path);
             break;
 
             case 'webp':
+                sendFileValidators($path);
                 header ("Content-type: image/webp");
-                header ("Last-Modified: ".gmdate('D, d M Y H:i:s ', filemtime($path)) . 'GMT');
-                header ("ETag: $hash");
                 header('Cache-control: public, max-age=31536000');
                 readfile($path);
             break;

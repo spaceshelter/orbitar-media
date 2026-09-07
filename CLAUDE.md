@@ -113,6 +113,45 @@ Three Docker containers orchestrated via docker-compose.yml:
 4. Stored locally in `data/` directory, optionally backed up to S3
 5. Returns JSON with hash URL and delete code
 
+## Video Pipeline (MP4)
+
+`pictshare/content-controllers/video/video.controller.php` decides per upload what browsers can play,
+using `ffprobe` (`planNormalization`). Target: H.264 up to High profile / level 5.2, 8-bit 4:2:0,
+progressive, even dimensions, AAC or MP3 audio, one video + at most one audio stream, `moov` before `mdat`.
+
+- Compliant uploads are stored byte-for-byte (no `encoder`-tag heuristics any more).
+- Container-only or audio-only problems (moov at the end, extra subtitle/data streams, AC-3/Opus audio)
+  are fixed **synchronously during the upload** with `-c:v copy`, so the bytes behind a URL never change
+  after the URL has been handed out.
+- Video transcodes (non-4:2:0, High 10 / 4:4:4, level > 5.2, > 4K or > 60 fps, odd dimensions, interlaced -> `yadif`)
+  still run in the background via `tools/re-encode_mp4.php <hash>` (capped by `MAX_CONCURRENT_VIDEO_HANDLERS`).
+  Transcodes emit High profile, CRF 23, and shrink the output to fit 3840x2160 / 60 fps (`fps=60`,
+  `scale=w='min(iw,3840)':h='min(ih,2160)':force_original_aspect_ratio=decrease`, never upscaling) so the result stays
+  within level 5.2; the trigger is pixel budget > 3840*2160, either side > 4096, fps > 60, or a source level > 5.2; the ffmpeg 4.4 `fps` filter does not take expressions, so the caps are fixed values chosen
+  from the probe. `-map_chapters -1` keeps chapters from re-materialising as a data stream (which would fail the
+  stream-count check on every later scan). The output replaces the file atomically (`rename` inside `data/<hash>/`,
+  temp name `<hash>.converting`), and the synchronous path registers the new file's sha1 so re-uploads dedupe.
+- `tools/re-encode_mp4.php` with no args scans `data/`; `dryrun` only reports. It refreshes the S3 copy after a rewrite.
+- Interlace detection decodes the first 5 frames (`ffprobe -read_intervals %+#5`) because ffprobe 4.4 reports
+  `field_order=unknown` for most H.264 streams.
+- `getVideoDimensions` returns *displayed* dimensions (rotation from the display matrix applied), which is what
+  the dimension-encoding hash should describe.
+- `isProperMP4` (upload type detection) still requires an MP4/MOV container with an H.264 stream; HEVC/AV1/WebM
+  uploads are rejected as before. Widening this needs a "processing" state or a CDN purge, see below.
+
+### Serving and caching
+- `serveMP4` opens the file first and derives size/ETag/Last-Modified from `fstat()` of that handle, so an atomic
+  replacement cannot split one response across two versions.
+- `/raw`, previews and images send a strong `ETag` (inode-mtime-size, `fileETag()` in `inc/core.php`) and
+  `Last-Modified`, answer `If-None-Match` / `If-Modified-Since` with 304, and honour `If-Range` (stale validator
+  => whole file, 200). Range parsing lives in `parseByteRange()`; suffix and open-ended ranges work, multi-range
+  is ignored (200), unsatisfiable ranges return 416 with `Content-Range: bytes */<size>`.
+- The old code used the immutable hash as ETag and rewrote videos in place ~1-2 minutes after upload. Bunny CDN
+  (`b.orbitar.media`) caches 5 MB chunks per URL and never revalidates them, so viewers got chunks of the original
+  spliced with chunks of the re-encode: frozen players and 416s (incident of 2026-09-07). The synchronous remux
+  removes that window for stream-copy cases; genuine background transcodes still need a Bunny purge of
+  `/<hash>.mp4/raw` when they finish (not implemented, needs the Bunny API key).
+
 ## Environment Variables
 
 Key variables in `.env` (see `.env.sample`):
