@@ -129,9 +129,13 @@ class VideoController implements ContentController
 
         if($plan === false || $plan['video'] === 'transcode')
         {
-            // Real transcode: too slow for the request, hand it to the background worker.
-            if($this->getCurrentNumberOfRunningConversions() >= MAX_CONCURRENT_VIDEO_HANDLERS)
+            // Real transcode: too slow for the request, hand it to the background worker, but only
+            // if a slot is free right now (probe and release), so the worker does not sit blocked
+            // while the un-normalised original is already being served.
+            $probeSlot = $this->acquireConversionSlot();
+            if($probeSlot === false)
                 return $busy;
+            $this->releaseConversionSlot($probeSlot);
             storeFile($tmpfile,$hash,true);
             system("nohup php ".ROOT.DS.'tools'.DS.'re-encode_mp4.php '.escapeshellarg($hash)." > /dev/null 2> /dev/null &");
         }
@@ -184,15 +188,11 @@ class VideoController implements ContentController
             for($i = 0; $i < $slots; $i++)
             {
                 $lock = ROOT.DS.'tmp'.DS."video-slot-$i.lock";
-                $fh = @fopen($lock, 'c');
-                if(!$fh)
-                {
-                    // Created by another user (root via docker exec running the CLI tool): the tmp dir is
-                    // ours, so replace the file rather than losing the slot for good.
-                    @unlink($lock);
-                    $fh = @fopen($lock, 'c');
-                    if(!$fh) continue;
-                }
+                // flock() is per inode and ignores the open mode, so a read-only handle locks just as
+                // well when another user (root running the CLI tool) owns the file. Never unlink and
+                // recreate: that would be a second inode, i.e. a second copy of the same slot.
+                $fh = @fopen($lock, 'c') ?: @fopen($lock, 'r');
+                if(!$fh) continue;
                 @chmod($lock, 0666); // CLI (root) and PHP-FPM (nginx) share these
                 if(flock($fh, LOCK_EX | LOCK_NB)) return $fh;
                 fclose($fh);
@@ -207,15 +207,6 @@ class VideoController implements ContentController
         if(!$fh) return;
         flock($fh, LOCK_UN);
         fclose($fh);
-    }
-
-    function getCurrentNumberOfRunningConversions()
-    {
-        $command = "ps aux | grep 're-encode_mp4.php' | grep -v grep | wc -l";
-        $output = null;
-        $return_var = null;
-        exec($command, $output, $return_var);
-        return intval($output[0]);
     }
 
     /**

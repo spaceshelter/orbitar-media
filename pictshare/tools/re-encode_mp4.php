@@ -48,14 +48,20 @@ $files = array(); // path => hash (or filename for the alt folder)
 
 if(in_array('altfolder',$argv) && defined('ALT_FOLDER') && ALT_FOLDER && is_dir(ALT_FOLDER))
 {
+    // Same gate as data/: either name the files or say 'all' explicitly
+    if(count($hashArgs)==0 && !$scanAll)
+        exit("usage: re-encode_mp4.php altfolder <hash> [<hash> ...] | altfolder all [dryrun]\n");
     echo "[i] Checking only the alt folder\n";
     foreach(scandir(ALT_FOLDER) as $filename)
     {
         $vid = ALT_FOLDER.DS.$filename;
         if(!is_file($vid)) continue;
+        if(count($hashArgs)>0 && !in_array($filename,$hashArgs)) continue;
         if(in_array(strtolower(pathinfo($vid, PATHINFO_EXTENSION)),$vc->getRegisteredExtensions()))
             $files[$vid] = $filename;
     }
+    if(count($files)==0 && count($hashArgs)>0)
+        exit("[!] None of the given hashes exist in the alt folder\n");
 }
 else
 {

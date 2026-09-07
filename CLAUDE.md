@@ -136,12 +136,14 @@ progressive, even dimensions, AAC or MP3 audio, one video + at most one audio st
   new file's sha1 so re-uploads dedupe.
 - `tools/re-encode_mp4.php <hash>...` normalises given hashes; the full scan needs an explicit `all` (plus `dryrun` to only
   report) because every rewrite changes the bytes and the ETag while Bunny may still hold the old chunks. Unresolvable hash
-  arguments make it refuse rather than fall back to a scan. It refreshes the S3 copy after a rewrite.
+  arguments make it refuse rather than fall back to a scan; `altfolder` has the same gate. It refreshes the S3 copy after a rewrite.
 - Concurrency: `acquireConversionSlot()` (flock on `tmp/video-slot-N.lock`, N = `MAX_CONCURRENT_VIDEO_HANDLERS`) bounds
   ffmpeg runs across the upload-time remux, the background worker, `/<width>/` resizes and gif->mp4. Capacity is reserved
   *before* `storeFile()`: a busy upload is rejected with "System is busy" while nothing has been published yet, so there
   is no rollback and no window in which a concurrent identical upload could dedupe onto a file that then disappears.
-  Lock files are chmod 0666 and recreated if another user (root via `docker exec`) owns them. `addSha1` appends under flock.
+  Admission for background transcodes probes the same slots (no more `ps aux | grep`). Lock files are chmod 0666; when
+  another user (root via `docker exec`) owns one it is opened read-only and flocked, never unlinked and recreated (that
+  would be a second inode, i.e. a duplicate slot). `addSha1` appends under flock.
 - Every generated file (normalised video, resize, first-frame preview, gif->mp4) is written to a temp name and `rename`d
   into place; generation failures return 503 `no-store` instead of leaving an empty file that `file_exists()` would serve
   forever. ffmpeg is run through `exec()`, never `system()`, so nothing can leak into the HTTP body.
