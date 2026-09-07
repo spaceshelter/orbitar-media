@@ -49,8 +49,12 @@ class VideoController implements ContentController
             $s = sizeStringToWidthHeight($size);
             $width = $s['width'];
             $newpath = ROOT.DS.'data'.DS.$hash.DS.$width.'_'.$hash;
-            if(!file_exists($newpath))
-                $this->resize($path,$newpath,$width);
+            if(!file_exists($newpath) && !$this->resize($path,$newpath,$width))
+            {
+                header('HTTP/1.1 503 Service Unavailable');
+                header('Cache-Control: no-store');
+                die('could not resize video');
+            }
             $path = $newpath;
         }
 
@@ -60,9 +64,11 @@ class VideoController implements ContentController
         else if(in_array('preview',$url))
         {
             $preview = $path.'_preview.jpg';
-            if(!file_exists($preview))
+            if(!file_exists($preview) && !$this->saveFirstFrameOfMP4($path,$preview))
             {
-                $this->saveFirstFrameOfMP4($path,$preview);
+                header('HTTP/1.1 503 Service Unavailable');
+                header('Cache-Control: no-store');
+                die('could not render preview');
             }
 
             sendFileValidators($preview);
@@ -95,9 +101,10 @@ class VideoController implements ContentController
 
     public function handleUpload($tmpfile,$hash=false)
     {
+        $probe = $this->probe($tmpfile);
         if($hash===false)
             if (defined('HASH_DIMS_AES_KEY')) {
-                $dimensions = $this->getVideoDimensions($tmpfile);
+                $dimensions = $this->getVideoDimensions($tmpfile, $probe);
                 if (!$dimensions) {
                     return array('status' => 'err', 'hash' => $hash, 'reason' => 'Can\'t get video dimensions');
                 }
@@ -114,28 +121,92 @@ class VideoController implements ContentController
                 return array('status'=>'err','hash'=>$hash,'reason'=>'Custom hash already exists');
         }
 
-        $file = storeFile($tmpfile,$hash,true);
+        // Decide (and reserve capacity) on the temp file, before anything is published: once
+        // storeFile() has run, the hash and its checksum are visible to concurrent uploads, and a
+        // "busy" rejection could no longer be rolled back safely.
+        $plan = $this->planNormalization($tmpfile, $probe);
+        $busy = array('status'=>'err','hash'=>$hash,'reason'=>'System is busy, try again later');
 
-        $plan = $this->planNormalization($file);
         if($plan === false || $plan['video'] === 'transcode')
         {
             // Real transcode: too slow for the request, hand it to the background worker.
-            $conversionsRunningNow = $this->getCurrentNumberOfRunningConversions();
-            if ($conversionsRunningNow >= MAX_CONCURRENT_VIDEO_HANDLERS) {
-                return array('status'=>'err','hash'=>$hash,'reason'=>'System is busy, try again later');
-            }
+            if($this->getCurrentNumberOfRunningConversions() >= MAX_CONCURRENT_VIDEO_HANDLERS)
+                return $busy;
+            storeFile($tmpfile,$hash,true);
             system("nohup php ".ROOT.DS.'tools'.DS.'re-encode_mp4.php '.escapeshellarg($hash)." > /dev/null 2> /dev/null &");
         }
         else if($plan['needed'])
         {
             // Stream copy only: finish before the URL is handed out so the bytes never change afterwards.
-            if($this->normalize($file, $plan))
-                addSha1($hash, sha1_file($file)); // re-uploads of the normalised file must dedupe too
-            else
-                error_log("pictshare: remux of $hash failed, serving the original (".implode('; ', $plan['reasons']).")");
+            // Still an ffmpeg run on the request path, so it takes one of the shared conversion slots.
+            $slot = $this->acquireConversionSlot();
+            if($slot === false)
+                return $busy;
+            try
+            {
+                $file = storeFile($tmpfile,$hash,true);
+                if($this->normalize($file, $plan))
+                    addSha1($hash, sha1_file($file)); // re-uploads of the normalised file must dedupe too
+                else
+                    error_log("pictshare: remux of $hash failed, serving the original (".implode('; ', $plan['reasons']).")");
+            }
+            finally
+            {
+                $this->releaseConversionSlot($slot);
+            }
         }
+        else
+            storeFile($tmpfile,$hash,true);
 
         return array('status'=>'ok','hash'=>$hash,'url'=>URL.$hash);
+    }
+
+    /**
+     * Per-process temp name next to $target (same filesystem, so the final rename is atomic).
+     * Unique per call: two requests generating the same uncached file must not share it, or the
+     * first rename would pull the pathname from under the second encoder.
+     */
+    function tempNameFor($target)
+    {
+        return $target.'.'.getmypid().'.'.bin2hex(random_bytes(4)).'.tmp';
+    }
+
+    /**
+     * Bounded number of concurrent ffmpeg runs across both the upload path and the background
+     * worker: MAX_CONCURRENT_VIDEO_HANDLERS flock()ed slot files in tmp/. Returns the lock
+     * handle, or false when every slot is taken (with $wait, blocks until one frees up).
+     */
+    function acquireConversionSlot($wait = false)
+    {
+        $slots = max(1, (int)MAX_CONCURRENT_VIDEO_HANDLERS);
+        while(true)
+        {
+            for($i = 0; $i < $slots; $i++)
+            {
+                $lock = ROOT.DS.'tmp'.DS."video-slot-$i.lock";
+                $fh = @fopen($lock, 'c');
+                if(!$fh)
+                {
+                    // Created by another user (root via docker exec running the CLI tool): the tmp dir is
+                    // ours, so replace the file rather than losing the slot for good.
+                    @unlink($lock);
+                    $fh = @fopen($lock, 'c');
+                    if(!$fh) continue;
+                }
+                @chmod($lock, 0666); // CLI (root) and PHP-FPM (nginx) share these
+                if(flock($fh, LOCK_EX | LOCK_NB)) return $fh;
+                fclose($fh);
+            }
+            if(!$wait) return false;
+            sleep(1);
+        }
+    }
+
+    function releaseConversionSlot($fh)
+    {
+        if(!$fh) return;
+        flock($fh, LOCK_UN);
+        fclose($fh);
     }
 
     function getCurrentNumberOfRunningConversions()
@@ -158,6 +229,7 @@ class VideoController implements ContentController
         if(!is_file($path) || !is_readable($path))
         {
             header('HTTP/1.1 404 Not Found');
+            header('Cache-Control: no-store');
             die('file not found');
         }
 
@@ -167,6 +239,7 @@ class VideoController implements ContentController
         if(!$fp)
         {
             header('HTTP/1.1 500 Internal Server Error');
+            header('Cache-Control: no-store');
             die('file not readable');
         }
         $st = fstat($fp);
@@ -185,6 +258,7 @@ class VideoController implements ContentController
             if($range === false)
             {
                 header('HTTP/1.1 416 Range Not Satisfiable');
+                header('Cache-Control: no-store'); // never let a CDN keep an error for a year
                 header("Content-Range: bytes */$size");
                 exit;
             }
@@ -198,7 +272,7 @@ class VideoController implements ContentController
 
         $length = $end - $start + 1;
         header('Content-Length: '.$length);
-        if($_SERVER['REQUEST_METHOD'] === 'HEAD' || $length <= 0)
+        if(($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD' || $length <= 0)
         {
             fclose($fp);
             exit;
@@ -227,7 +301,12 @@ class VideoController implements ContentController
         $bin = escapeshellcmd(preg_replace('/ffmpeg$/', 'ffprobe', FFMPEG_BINARY));
         $cmd = "$bin -v error -print_format json -show_format -show_streams ".escapeshellarg($file)." 2>/dev/null";
         $json = shell_exec($cmd);
-        if(!$json) return false;
+        if(!$json)
+        {
+            // legitimate for a non-media file, but also what a missing/crashing ffprobe looks like
+            if(is_file($file)) error_log("pictshare: ffprobe produced no output for $file");
+            return false;
+        }
         $data = json_decode($json, true);
         if(!is_array($data) || empty($data['streams'])) return false;
         return $data;
@@ -256,21 +335,16 @@ class VideoController implements ContentController
     }
 
     /**
-     * Frame rate a transcode of this stream would run at: the higher of the average and
-     * the nominal (timebase) rate. ffmpeg 4.4 pads variable-rate input up to r_frame_rate
-     * when writing MP4, so a VFR clip averaging 40 fps with r_frame_rate 120 comes out at 120.
-     * Returns 0 when unknown.
+     * One of ffprobe's rational frame-rate fields as float (0 when unknown).
+     * avg_frame_rate is the real rate; r_frame_rate is the timebase-derived nominal rate, which
+     * VFR sources (screen recordings, concatenations) inflate to 120, 1000 or more.
      */
-    function frameRate($stream)
+    function frameRate($stream, $key = 'avg_frame_rate')
     {
-        $max = 0;
-        foreach(array('avg_frame_rate', 'r_frame_rate') as $k)
-        {
-            if(empty($stream[$k]) || strpos($stream[$k], '/') === false) continue;
-            list($n, $d) = explode('/', $stream[$k], 2);
-            if((float)$d > 0 && (float)$n > 0) $max = max($max, (float)$n / (float)$d);
-        }
-        return $max;
+        if(empty($stream[$key]) || strpos($stream[$key], '/') === false) return 0;
+        list($n, $d) = explode('/', $stream[$key], 2);
+        if((float)$d <= 0 || (float)$n <= 0) return 0;
+        return (float)$n / (float)$d;
     }
 
     /**
@@ -360,9 +434,9 @@ class VideoController implements ContentController
      *   reasons  => string[] human readable, for logs
      *   vindex / aindex / interlaced / channels => details for the ffmpeg command
      */
-    function planNormalization($file)
+    function planNormalization($file, $probe = null)
     {
-        $probe = $this->probe($file);
+        if($probe === null) $probe = $this->probe($file);
         if($probe === false) return false;
 
         $v = $this->primaryVideoStream($probe);
@@ -372,7 +446,7 @@ class VideoController implements ContentController
         $plan = array(
             'video' => 'copy', 'audio' => $a ? 'copy' : 'none', 'remux' => false,
             'reasons' => array(), 'vindex' => $v['index'], 'aindex' => $a ? $a['index'] : null,
-            'interlaced' => false, 'cap_size' => false, 'cap_fps' => false, 'channels' => $a ? (int)($a['channels'] ?? 2) : 0,
+            'interlaced' => false, 'cap_size' => false, 'fps_out' => null, 'channels' => $a ? (int)($a['channels'] ?? 2) : 0,
         );
 
         // --- video stream
@@ -403,17 +477,20 @@ class VideoController implements ContentController
         // Anything beyond 4K@60 lands above level 5.2 whatever the source codec says.
         // Level 5.2 also bounds each dimension on its own (a 11520x720 strip is level 6),
         // hence the per-side limits next to the pixel budget.
-        $fps = $this->frameRate($v);
         if(($w * $h) > self::$maxPixels || $w > self::$maxSide || $h > self::$maxSide)
         {
             $plan['reasons'][] = "size {$w}x{$h}";
             $plan['cap_size'] = true;
         }
-        if($fps > self::$maxFps)
-        {
-            $plan['reasons'][] = "frame rate ".round($fps, 2);
-            $plan['cap_fps'] = true;
-        }
+        // Only the real (average) rate decides whether a transcode is needed. The nominal rate
+        // is still relevant once we transcode for another reason: ffmpeg 4.4 pads VFR input up
+        // to r_frame_rate when writing MP4, so pin the output rate to the real one in that case.
+        $avgFps = $this->frameRate($v, 'avg_frame_rate');
+        $nominalFps = $this->frameRate($v, 'r_frame_rate');
+        if($avgFps > self::$maxFps)
+            $plan['reasons'][] = "frame rate ".round($avgFps, 2);
+        if($avgFps > self::$maxFps || $nominalFps > self::$maxFps)
+            $plan['fps_out'] = ($avgFps > 0 && $avgFps <= self::$maxFps) ? round($avgFps, 3) : self::$maxFps;
 
         $fieldOrder = strtolower($v['field_order'] ?? 'unknown');
         if($this->isInterlaced($file, $v['index'], $fieldOrder))
@@ -479,8 +556,8 @@ class VideoController implements ContentController
             $filters = array();
             if($plan['interlaced']) $filters[] = 'yadif';
             // fit inside 4K and 60 fps so the resulting level stays <= 5.2
-            if(!empty($plan['cap_fps']))
-                $filters[] = 'fps='.self::$maxFps;
+            if(!empty($plan['fps_out']))
+                $filters[] = 'fps='.$plan['fps_out'];
             if(!empty($plan['cap_size'])) // shrink to fit 3840x2160, never enlarge
                 $filters[] = "scale=w='min(iw,3840)':h='min(ih,2160)':force_original_aspect_ratio=decrease";
             $filters[] = 'scale=trunc(iw/2)*2:trunc(ih/2)*2';
@@ -512,15 +589,15 @@ class VideoController implements ContentController
         if($plan === false || !$plan['needed']) return false;
 
         // Same directory as the target so the final rename is atomic (data/ is a separate mount from tmp/)
-        $out = $file.'.converting';
-        @unlink($out);
+        $out = $this->tempNameFor($file);
         $cmd = $this->normalizationCommand($file, $plan, $out);
+        $output = array();
         $rc = 0;
-        system($cmd, $rc);
+        exec($cmd.' 2>&1', $output, $rc); // exec(), not system(): nothing may leak into the HTTP response
 
         if($rc !== 0 || !is_file($out) || filesize($out) === 0 || $this->primaryVideoStream($this->probe($out) ?: array('streams'=>array())) === null)
         {
-            error_log("pictshare: ffmpeg failed (rc=$rc) for $file: $cmd");
+            error_log("pictshare: ffmpeg failed (rc=$rc) for $file: $cmd :: ".implode(' | ', array_slice($output, -5)));
             @unlink($out);
             return false;
         }
@@ -553,22 +630,34 @@ class VideoController implements ContentController
         return $duration > 0;
     }
 
+    /**
+     * First frame as JPEG. Rendered to a temp name and renamed into place so a concurrent
+     * request can never serve (and a CDN never cache) a half-written preview.
+     */
     function saveFirstFrameOfMP4($path,$target)
-	{
-		$bin = escapeshellcmd(FFMPEG_BINARY);
-		$file = escapeshellarg($path);
-		$cmd = "$bin -y -i $file -vframes 1 -f image2 $target";
-
-		system($cmd);
+    {
+        $bin = escapeshellcmd(FFMPEG_BINARY);
+        $tmp = $this->tempNameFor($target);
+        $cmd = "$bin -y -nostdin -loglevel error -i ".escapeshellarg($path)." -vframes 1 -f image2 ".escapeshellarg($tmp).' 2>&1';
+        $output = array();
+        $rc = 0;
+        exec($cmd, $output, $rc);
+        if($rc !== 0 || !is_file($tmp) || filesize($tmp) === 0 || !rename($tmp, $target))
+        {
+            error_log("pictshare: preview render failed (rc=$rc) for $path :: ".implode(' | ', array_slice($output, -3)));
+            @unlink($tmp);
+            return false;
+        }
+        return true;
     }
 
     /**
      * Displayed dimensions of the video (rotation from the container applied),
      * so that dimension-encoding hashes describe what the viewer sees.
      */
-    function getVideoDimensions($path)
+    function getVideoDimensions($path, $probe = null)
     {
-        $probe = $this->probe($path);
+        if($probe === null) $probe = $this->probe($path);
         if($probe === false) return false;
         $v = $this->primaryVideoStream($probe);
         if($v === null) return false;
@@ -580,17 +669,38 @@ class VideoController implements ContentController
         return array('width' => $w, 'height' => $h);
     }
 
+    /**
+     * Width-constrained copy for /<width>/ URLs. A full transcode on the request path, so it
+     * takes a conversion slot, renders to a temp name and is renamed into place only on success
+     * (a failed run must not leave an empty file that file_exists() would serve forever).
+     */
     function resize($in,$out,$width)
-	{
-		$file = escapeshellarg($in);
-		$bin = escapeshellcmd(FFMPEG_BINARY);
-
-		$addition = '-c:v libx264 -preset medium -crf 23 -profile:v high -pix_fmt yuv420p -movflags +faststart';
-        $height = 'trunc(ow/a/2)*2';
-
-		$cmd = "$bin -i $file -y -vf scale=\"$width:$height\" $addition ".escapeshellarg($out);
-		system($cmd);
-
-		return (file_exists($out) && filesize($out)>0);
-	}
+    {
+        $slot = $this->acquireConversionSlot();
+        if($slot === false) return false;
+        try
+        {
+            $bin = escapeshellcmd(FFMPEG_BINARY);
+            $tmp = $this->tempNameFor($out);
+            $filter = 'scale='.(int)$width.':trunc(ow/a/2)*2';
+            $cmd = "$bin -y -nostdin -loglevel error -i ".escapeshellarg($in)
+                 ." -map 0:v:0 -map 0:a:0? -vf ".escapeshellarg($filter)
+                 ." -c:v libx264 -preset medium -crf 23 -profile:v high -pix_fmt yuv420p -c:a aac -b:a 128k"
+                 ." -map_chapters -1 -movflags +faststart -f mp4 ".escapeshellarg($tmp).' 2>&1';
+            $output = array();
+            $rc = 0;
+            exec($cmd, $output, $rc);
+            if($rc !== 0 || !is_file($tmp) || filesize($tmp) === 0 || !rename($tmp, $out))
+            {
+                error_log("pictshare: resize failed (rc=$rc) for $in :: ".implode(' | ', array_slice($output, -3)));
+                @unlink($tmp);
+                return false;
+            }
+            return true;
+        }
+        finally
+        {
+            $this->releaseConversionSlot($slot);
+        }
+    }
 }

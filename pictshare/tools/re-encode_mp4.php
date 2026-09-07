@@ -9,11 +9,15 @@
 * is at fault, H.264 transcode otherwise. Compliant files are left untouched.
 *
 * usage: php re-encode_mp4.php <hash> [<hash> ...]   normalise the given hashes
-*        php re-encode_mp4.php                        scan data/ and normalise every mp4
+*        php re-encode_mp4.php all [dryrun]           scan data/ and normalise every mp4
 *
 * Params:
+* all       => Required for the full scan. Every rewritten file gets a new ETag, and a CDN in
+*              front may still hold chunks of the old bytes, so this is deliberately not the default.
 * altfolder => Check ALT_FOLDER (if defined) instead of data/
 * dryrun    => Only report what would be done
+*
+* Concurrency with uploads is bounded by the shared conversion slots (MAX_CONCURRENT_VIDEO_HANDLERS).
 */ 
 
 
@@ -36,7 +40,10 @@ require_once(ROOT . DS . 'content-controllers' . DS. 'video'. DS . 'video.contro
 if(!defined('FFMPEG_BINARY')||FFMPEG_BINARY=='' || !FFMPEG_BINARY) exit('Error: FFMPEG_BINARY not defined, no clue where to look');
 
 $vc = new VideoController();
+$flags = array('dryrun', 'altfolder', 'all', 'force');
 $dryrun = in_array('dryrun',$argv);
+$scanAll = in_array('all',$argv);
+$hashArgs = array_values(array_diff(array_slice($argv, 1), $flags));
 $files = array(); // path => hash (or filename for the alt folder)
 
 if(in_array('altfolder',$argv) && defined('ALT_FOLDER') && ALT_FOLDER && is_dir(ALT_FOLDER))
@@ -53,12 +60,24 @@ if(in_array('altfolder',$argv) && defined('ALT_FOLDER') && ALT_FOLDER && is_dir(
 else
 {
     $dir = ROOT.DS.'data'.DS;
-    foreach($argv as $arg)
+    foreach($hashArgs as $arg)
+    {
         if(isExistingHash($arg) && in_array(strtolower(pathinfo($dir.$arg, PATHINFO_EXTENSION)),$vc->getRegisteredExtensions()))
             $files[$dir.$arg.DS.$arg] = $arg;
+        else
+            echo " [!] $arg: not an existing mp4 hash, ignored\n";
+    }
 
-    if(count($files)==0)
+    // A typo'd or already-deleted hash must never silently turn into "rewrite the whole corpus"
+    if(count($files)==0 && count($hashArgs)>0)
+        exit("[!] None of the given hashes resolved to an mp4; refusing to scan data/\n");
+
+    if(count($hashArgs)==0)
     {
+        if(!$scanAll)
+            exit("usage: re-encode_mp4.php <hash> [<hash> ...] | all [dryrun]\n"
+                ."[!] Scanning all of data/ rewrites every non-compliant file (new bytes, new ETag) while a CDN may\n"
+                ."    still cache the old ones. Pass 'all' explicitly, ideally after 'all dryrun'.\n");
         echo "[i] Finding local mp4 files\n";
         foreach(scandir($dir) as $filename)
         {
@@ -72,7 +91,7 @@ else
 
 if(count($files)==0) exit('No MP4 files found'."\n");
 
-echo "[i] Got ".count($files)." files\n";
+echo "[i] Got ".count($files)." files".($dryrun ? " (dry run)" : "")."\n";
 
 $isAlt = in_array('altfolder',$argv);
 foreach($files as $path => $hash)
@@ -93,7 +112,16 @@ foreach($files as $path => $hash)
     echo " [i] $hash: $what (".implode('; ',$plan['reasons']).")";
     if($dryrun) { echo " [dry run]\n"; continue; }
 
-    if(!$vc->normalize($path,$plan))
+    $slot = $vc->acquireConversionSlot(true); // shares the cap with uploads; waits for a free slot
+    try
+    {
+        $ok = $vc->normalize($path,$plan);
+    }
+    finally
+    {
+        $vc->releaseConversionSlot($slot);
+    }
+    if(!$ok)
     {
         echo "\tFAILED\n";
         continue;

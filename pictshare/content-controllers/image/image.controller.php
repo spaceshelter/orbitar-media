@@ -185,8 +185,12 @@ class ImageController implements ContentController
 
                         case 'mp4':
                             $mp4path = ROOT.DS.'data'.DS.$hash.DS.$hash.'mp4';
-                            if(!file_exists($mp4path))
-                                $this->gifToMP4($path,$mp4path);
+                            if(!file_exists($mp4path) && !$this->gifToMP4($path,$mp4path))
+                            {
+                                header('HTTP/1.1 503 Service Unavailable');
+                                header('Cache-Control: no-store');
+                                die('could not convert gif');
+                            }
                             $path = $mp4path;
 
                                 if(in_array('raw',$url))
@@ -194,9 +198,11 @@ class ImageController implements ContentController
                                 else if(in_array('preview',$url))
                                 {
                                     $preview = $path.'_preview.jpg';
-                                    if(!file_exists($preview))
+                                    if(!file_exists($preview) && !(new VideoController())->saveFirstFrameOfMP4($path,$preview))
                                     {
-                                        (new VideoController())->saveFirstFrameOfMP4($path,$preview);
+                                        header('HTTP/1.1 503 Service Unavailable');
+                                        header('Cache-Control: no-store');
+                                        die('could not render preview');
                                     }
 
                                     sendFileValidators($preview);
@@ -275,19 +281,40 @@ class ImageController implements ContentController
         return imagecreatefromstring(file_get_contents($path));
     }
 
+    /**
+     * GIF -> MP4 for /mp4 URLs. Transcode on the request path: takes a conversion slot, renders to
+     * a temp name and is renamed into place only on success, so a concurrent request never sees a
+     * partial file and a failed run never leaves an empty one behind.
+     */
     function gifToMP4($gifpath,$target)
-	{
-		$bin = escapeshellcmd(FFMPEG_BINARY);
-		$file = escapeshellarg($gifpath);
-
-		if(!file_exists($target)) //simple caching.. have to think of something better
-		{
-			$cmd = "$bin -f gif -y -i $file -vcodec libx264 -an -profile:v baseline -level 3.0 -pix_fmt yuv420p -vf \"scale=trunc(iw/2)*2:trunc(ih/2)*2\" -f mp4 $target";
-			system($cmd);
-		}
-
-		return $target;
-	}
+    {
+        if(file_exists($target)) return true;
+        $vc = new VideoController();
+        $slot = $vc->acquireConversionSlot();
+        if($slot === false) return false;
+        try
+        {
+            $bin = escapeshellcmd(FFMPEG_BINARY);
+            $tmp = $vc->tempNameFor($target);
+            $cmd = "$bin -y -nostdin -loglevel error -f gif -i ".escapeshellarg($gifpath)
+                 ." -an -c:v libx264 -preset medium -crf 23 -profile:v high -pix_fmt yuv420p"
+                 ." -vf ".escapeshellarg('scale=trunc(iw/2)*2:trunc(ih/2)*2')." -movflags +faststart -f mp4 ".escapeshellarg($tmp).' 2>&1';
+            $output = array();
+            $rc = 0;
+            exec($cmd, $output, $rc);
+            if($rc !== 0 || !is_file($tmp) || filesize($tmp) === 0 || !rename($tmp, $target))
+            {
+                error_log("pictshare: gif->mp4 failed (rc=$rc) for $gifpath :: ".implode(' | ', array_slice($output, -3)));
+                @unlink($tmp);
+                return false;
+            }
+            return true;
+        }
+        finally
+        {
+            $vc->releaseConversionSlot($slot);
+        }
+    }
 
     function saveObjOfImage($im,$path,$type)
     {

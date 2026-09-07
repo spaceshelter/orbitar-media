@@ -275,16 +275,10 @@ function sizeStringToWidthHeight($size)
 }
 
 /**
- * Strong ETag for a file on disk: inode, mtime and size (same recipe as Apache's default).
- * A file that is rewritten in place (video normalisation, resize cache) gets a new tag,
- * unlike the old scheme that used the immutable hash as the ETag.
+ * Strong ETag from a stat()/fstat() array: inode, mtime and size (same recipe as Apache's
+ * default). A file that is rewritten in place (video normalisation, resize cache) gets a new
+ * tag, unlike the old scheme that used the immutable hash as the ETag.
  */
-function fileETag($path)
-{
-    clearstatcache(true, $path);
-    return statETag(stat($path));
-}
-
 function statETag($st)
 {
     return '"'.dechex($st['ino']).'-'.dechex($st['mtime']).'-'.dechex($st['size']).'"';
@@ -583,7 +577,10 @@ function addSha1($hash,$sha1)
 {
     if(sha1Exists($sha1)) return;
     $fp = fopen(ROOT.DS.'data'.DS.'sha1.csv','a');
+    if(!$fp) return false;
+    flock($fp, LOCK_EX); // whole-line appends even when uploads and the worker race
     fwrite($fp,"$sha1;$hash\n");
+    flock($fp, LOCK_UN);
     fclose($fp);
     return true;
 }

@@ -127,11 +127,24 @@ progressive, even dimensions, AAC or MP3 audio, one video + at most one audio st
   still run in the background via `tools/re-encode_mp4.php <hash>` (capped by `MAX_CONCURRENT_VIDEO_HANDLERS`).
   Transcodes emit High profile, CRF 23, and shrink the output to fit 3840x2160 / 60 fps (`fps=60`,
   `scale=w='min(iw,3840)':h='min(ih,2160)':force_original_aspect_ratio=decrease`, never upscaling) so the result stays
-  within level 5.2; the trigger is pixel budget > 3840*2160, either side > 4096, fps > 60, or a source level > 5.2; the ffmpeg 4.4 `fps` filter does not take expressions, so the caps are fixed values chosen
+  within level 5.2; the trigger is pixel budget > 3840*2160, either side > 4096, *average* fps > 60, or a source level > 5.2 (the nominal
+  `r_frame_rate` never triggers, VFR sources inflate it, but it does pin `fps=` to the real rate during a transcode because
+  ffmpeg 4.4 pads VFR up to the nominal rate); the ffmpeg 4.4 `fps` filter does not take expressions, so the caps are fixed values chosen
   from the probe. `-map_chapters -1` keeps chapters from re-materialising as a data stream (which would fail the
-  stream-count check on every later scan). The output replaces the file atomically (`rename` inside `data/<hash>/`,
-  temp name `<hash>.converting`), and the synchronous path registers the new file's sha1 so re-uploads dedupe.
-- `tools/re-encode_mp4.php` with no args scans `data/`; `dryrun` only reports. It refreshes the S3 copy after a rewrite.
+  stream-count check on every later scan). The output replaces the file atomically (`rename` inside `data/<hash>/`, per-process
+  temp name `<target>.<pid>.<rand>.tmp` so concurrent generators never share one), and the synchronous path registers the
+  new file's sha1 so re-uploads dedupe.
+- `tools/re-encode_mp4.php <hash>...` normalises given hashes; the full scan needs an explicit `all` (plus `dryrun` to only
+  report) because every rewrite changes the bytes and the ETag while Bunny may still hold the old chunks. Unresolvable hash
+  arguments make it refuse rather than fall back to a scan. It refreshes the S3 copy after a rewrite.
+- Concurrency: `acquireConversionSlot()` (flock on `tmp/video-slot-N.lock`, N = `MAX_CONCURRENT_VIDEO_HANDLERS`) bounds
+  ffmpeg runs across the upload-time remux, the background worker, `/<width>/` resizes and gif->mp4. Capacity is reserved
+  *before* `storeFile()`: a busy upload is rejected with "System is busy" while nothing has been published yet, so there
+  is no rollback and no window in which a concurrent identical upload could dedupe onto a file that then disappears.
+  Lock files are chmod 0666 and recreated if another user (root via `docker exec`) owns them. `addSha1` appends under flock.
+- Every generated file (normalised video, resize, first-frame preview, gif->mp4) is written to a temp name and `rename`d
+  into place; generation failures return 503 `no-store` instead of leaving an empty file that `file_exists()` would serve
+  forever. ffmpeg is run through `exec()`, never `system()`, so nothing can leak into the HTTP body.
 - Interlace detection decodes the first 5 frames (`ffprobe -read_intervals %+#5`) because ffprobe 4.4 reports
   `field_order=unknown` for most H.264 streams.
 - `getVideoDimensions` returns *displayed* dimensions (rotation from the display matrix applied), which is what
@@ -142,10 +155,11 @@ progressive, even dimensions, AAC or MP3 audio, one video + at most one audio st
 ### Serving and caching
 - `serveMP4` opens the file first and derives size/ETag/Last-Modified from `fstat()` of that handle, so an atomic
   replacement cannot split one response across two versions.
-- `/raw`, previews and images send a strong `ETag` (inode-mtime-size, `fileETag()` in `inc/core.php`) and
+- `/raw`, previews and images send a strong `ETag` (inode-mtime-size, `statETag()` in `inc/core.php`) and
   `Last-Modified`, answer `If-None-Match` / `If-Modified-Since` with 304, and honour `If-Range` (stale validator
   => whole file, 200). Range parsing lives in `parseByteRange()`; suffix and open-ended ranges work, multi-range
-  is ignored (200), unsatisfiable ranges return 416 with `Content-Range: bytes */<size>`.
+  is ignored (200), unsatisfiable ranges return 416 with `Content-Range: bytes */<size>`. Error responses (404/416/500/503)
+  carry `Cache-Control: no-store`.
 - The old code used the immutable hash as ETag and rewrote videos in place ~1-2 minutes after upload. Bunny CDN
   (`b.orbitar.media`) caches 5 MB chunks per URL and never revalidates them, so viewers got chunks of the original
   spliced with chunks of the re-encode: frozen players and 416s (incident of 2026-09-07). The synchronous remux
