@@ -46,7 +46,14 @@ $scanAll = in_array('all',$argv);
 $hashArgs = array_values(array_diff(array_slice($argv, 1), $flags));
 $files = array(); // path => hash (or filename for the alt folder)
 
-if(in_array('altfolder',$argv) && defined('ALT_FOLDER') && ALT_FOLDER && is_dir(ALT_FOLDER))
+// Decide once: 'altfolder' with no usable ALT_FOLDER must not quietly become a data/ run
+// (which would also skip the checksum and S3 refresh below).
+$isAlt = in_array('altfolder',$argv);
+$altUsable = defined('ALT_FOLDER') && ALT_FOLDER && is_dir(ALT_FOLDER);
+if($isAlt && !$altUsable)
+    exit("[!] altfolder requested but ALT_FOLDER is not configured\n");
+
+if($isAlt)
 {
     // Same gate as data/: either name the files or say 'all' explicitly
     if(count($hashArgs)==0 && !$scanAll)
@@ -99,28 +106,36 @@ if(count($files)==0) exit('No MP4 files found'."\n");
 
 echo "[i] Got ".count($files)." files".($dryrun ? " (dry run)" : "")."\n";
 
-$isAlt = in_array('altfolder',$argv);
 foreach($files as $path => $hash)
 {
-    $plan = $vc->planNormalization($path);
-    if($plan === false)
+    // Take the slot first: the probe below runs ffprobe (and may decode frames), which belongs
+    // inside the cap too. Bounded wait, so a wedged slot shows up in the log instead of as an
+    // ever-growing pile of sleeping workers.
+    $slot = $dryrun ? null : $vc->acquireConversionSlot(600);
+    if(!$dryrun && $slot === false)
     {
-        echo " [!] $hash: cannot be probed, skipping\n";
-        continue;
+        error_log("pictshare: re-encode worker gave up waiting for a conversion slot ($hash)");
+        echo " [!] $hash: no conversion slot became free, giving up\n";
+        exit(1);
     }
-    if(!$plan['needed'])
-    {
-        echo " [i] $hash: already fine\n";
-        continue;
-    }
-
-    $what = $plan['video']==='transcode' ? 'transcode' : 'remux';
-    echo " [i] $hash: $what (".implode('; ',$plan['reasons']).")";
-    if($dryrun) { echo " [dry run]\n"; continue; }
-
-    $slot = $vc->acquireConversionSlot(true); // shares the cap with uploads; waits for a free slot
     try
     {
+        $plan = $vc->planNormalization($path);
+        if($plan === false)
+        {
+            echo " [!] $hash: cannot be probed, skipping\n";
+            continue;
+        }
+        if(!$plan['needed'])
+        {
+            echo " [i] $hash: already fine\n";
+            continue;
+        }
+
+        $what = $plan['video']==='transcode' ? 'transcode' : 'remux';
+        echo " [i] $hash: $what (".implode('; ',$plan['reasons']).")";
+        if($dryrun) { echo " [dry run]\n"; continue; }
+
         $ok = $vc->normalize($path,$plan);
     }
     finally

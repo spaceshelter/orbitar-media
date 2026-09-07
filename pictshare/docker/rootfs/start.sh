@@ -77,6 +77,13 @@ echo ' [+] Creating config'
 touch data/sha1.csv
 chown nginx:nginx data/sha1.csv
 
+# conversion slot files shared by PHP-FPM (nginx) and the CLI tool (whoever runs it)
+for i in $(seq 0 $(( ${MAX_CONCURRENT_VIDEO_HANDLERS:-4} - 1 ))); do
+    touch "tmp/video-slot-$i.lock"
+    chmod 666 "tmp/video-slot-$i.lock"
+    chown nginx:nginx "tmp/video-slot-$i.lock"
+done
+
 _buildConfig > inc/config.inc.php
 
 echo ' [+] Starting nginx'

@@ -134,17 +134,21 @@ progressive, even dimensions, AAC or MP3 audio, one video + at most one audio st
   stream-count check on every later scan). The output replaces the file atomically (`rename` inside `data/<hash>/`, per-process
   temp name `<target>.<pid>.<rand>.tmp` so concurrent generators never share one), and the synchronous path registers the
   new file's sha1 so re-uploads dedupe.
-- `tools/re-encode_mp4.php <hash>...` normalises given hashes; the full scan needs an explicit `all` (plus `dryrun` to only
+- `tools/re-encode_mp4.php <hash>...` normalises given hashes (`altfolder` with an unset ALT_FOLDER refuses instead of
+  silently running on `data/`); the full scan needs an explicit `all` (plus `dryrun` to only
   report) because every rewrite changes the bytes and the ETag while Bunny may still hold the old chunks. Unresolvable hash
   arguments make it refuse rather than fall back to a scan; `altfolder` has the same gate. It refreshes the S3 copy after a rewrite.
-- Concurrency: `acquireConversionSlot()` (flock on `tmp/video-slot-N.lock`, N = `MAX_CONCURRENT_VIDEO_HANDLERS`) bounds
-  ffmpeg runs across the upload-time remux, the background worker, `/<width>/` resizes and gif->mp4. Capacity is reserved
+- Concurrency: `acquireConversionSlot($waitSeconds)` (flock on `tmp/video-slot-N.lock`, N = `MAX_CONCURRENT_VIDEO_HANDLERS`,
+  pre-created 0666 by `start.sh`) bounds ffmpeg runs across the upload-time remux, the background worker (which takes the
+  slot *before* probing, waits at most 600 s, then logs and exits non-zero) and gif->mp4. A pass that can open no slot file
+  is logged. `/<width>/` variants of videos return 404: nothing linked to them and they were an unauthenticated full
+  transcode competing with uploads. Capacity is reserved
   *before* `storeFile()`: a busy upload is rejected with "System is busy" while nothing has been published yet, so there
   is no rollback and no window in which a concurrent identical upload could dedupe onto a file that then disappears.
   Admission for background transcodes probes the same slots (no more `ps aux | grep`). Lock files are chmod 0666; when
   another user (root via `docker exec`) owns one it is opened read-only and flocked, never unlinked and recreated (that
   would be a second inode, i.e. a duplicate slot). `addSha1` appends under flock.
-- Every generated file (normalised video, resize, first-frame preview, gif->mp4) is written to a temp name and `rename`d
+- Every generated file (normalised video, first-frame preview, gif->mp4) is written to a temp name and `rename`d
   into place; generation failures return 503 `no-store` instead of leaving an empty file that `file_exists()` would serve
   forever. ffmpeg is run through `exec()`, never `system()`, so nothing can leak into the HTTP body.
 - Interlace detection decodes the first 5 frames (`ffprobe -read_intervals %+#5`) because ffprobe 4.4 reports

@@ -40,23 +40,16 @@ class VideoController implements ContentController
     {
         $path = ROOT.DS.'data'.DS.$hash.DS.$hash;
 
-        //check if video should be resized
+        // No /<width>/ variants for video: that was an unauthenticated full transcode on the
+        // request path (any numeric segment, no bound), nothing links to it, and it would
+        // compete with uploads for the conversion slots.
         foreach($url as $u)
             if(isSize($u)==true)
-                $size = $u;
-        if($size)
-        {
-            $s = sizeStringToWidthHeight($size);
-            $width = $s['width'];
-            $newpath = ROOT.DS.'data'.DS.$hash.DS.$width.'_'.$hash;
-            if(!file_exists($newpath) && !$this->resize($path,$newpath,$width))
             {
-                header('HTTP/1.1 503 Service Unavailable');
+                header('HTTP/1.1 404 Not Found');
                 header('Cache-Control: no-store');
-                die('could not resize video');
+                die('video size variants are not available');
             }
-            $path = $newpath;
-        }
 
 
         if(in_array('raw',$url))
@@ -178,13 +171,16 @@ class VideoController implements ContentController
     /**
      * Bounded number of concurrent ffmpeg runs across both the upload path and the background
      * worker: MAX_CONCURRENT_VIDEO_HANDLERS flock()ed slot files in tmp/. Returns the lock
-     * handle, or false when every slot is taken (with $wait, blocks until one frees up).
+     * handle, or false when every slot is taken. $waitSeconds > 0 keeps retrying for that long
+     * (never forever: a wedged slot must surface as a failure, not as sleeping processes).
      */
-    function acquireConversionSlot($wait = false)
+    function acquireConversionSlot($waitSeconds = 0)
     {
         $slots = max(1, (int)MAX_CONCURRENT_VIDEO_HANDLERS);
+        $deadline = time() + (int)$waitSeconds;
         while(true)
         {
+            $openable = 0;
             for($i = 0; $i < $slots; $i++)
             {
                 $lock = ROOT.DS.'tmp'.DS."video-slot-$i.lock";
@@ -193,11 +189,14 @@ class VideoController implements ContentController
                 // recreate: that would be a second inode, i.e. a second copy of the same slot.
                 $fh = @fopen($lock, 'c') ?: @fopen($lock, 'r');
                 if(!$fh) continue;
+                $openable++;
                 @chmod($lock, 0666); // CLI (root) and PHP-FPM (nginx) share these
                 if(flock($fh, LOCK_EX | LOCK_NB)) return $fh;
                 fclose($fh);
             }
-            if(!$wait) return false;
+            if($openable === 0)
+                error_log("pictshare: none of the $slots conversion slot files in ".ROOT.DS.'tmp'." can be opened; every conversion will report busy");
+            if(time() >= $deadline) return false;
             sleep(1);
         }
     }
@@ -660,38 +659,4 @@ class VideoController implements ContentController
         return array('width' => $w, 'height' => $h);
     }
 
-    /**
-     * Width-constrained copy for /<width>/ URLs. A full transcode on the request path, so it
-     * takes a conversion slot, renders to a temp name and is renamed into place only on success
-     * (a failed run must not leave an empty file that file_exists() would serve forever).
-     */
-    function resize($in,$out,$width)
-    {
-        $slot = $this->acquireConversionSlot();
-        if($slot === false) return false;
-        try
-        {
-            $bin = escapeshellcmd(FFMPEG_BINARY);
-            $tmp = $this->tempNameFor($out);
-            $filter = 'scale='.(int)$width.':trunc(ow/a/2)*2';
-            $cmd = "$bin -y -nostdin -loglevel error -i ".escapeshellarg($in)
-                 ." -map 0:v:0 -map 0:a:0? -vf ".escapeshellarg($filter)
-                 ." -c:v libx264 -preset medium -crf 23 -profile:v high -pix_fmt yuv420p -c:a aac -b:a 128k"
-                 ." -map_chapters -1 -movflags +faststart -f mp4 ".escapeshellarg($tmp).' 2>&1';
-            $output = array();
-            $rc = 0;
-            exec($cmd, $output, $rc);
-            if($rc !== 0 || !is_file($tmp) || filesize($tmp) === 0 || !rename($tmp, $out))
-            {
-                error_log("pictshare: resize failed (rc=$rc) for $in :: ".implode(' | ', array_slice($output, -3)));
-                @unlink($tmp);
-                return false;
-            }
-            return true;
-        }
-        finally
-        {
-            $this->releaseConversionSlot($slot);
-        }
-    }
 }
