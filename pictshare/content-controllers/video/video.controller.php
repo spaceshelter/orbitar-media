@@ -130,7 +130,9 @@ class VideoController implements ContentController
                 return $busy;
             $this->releaseConversionSlot($probeSlot);
             storeFile($tmpfile,$hash,true);
-            system("nohup php ".ROOT.DS.'tools'.DS.'re-encode_mp4.php '.escapeshellarg($hash)." > /dev/null 2> /dev/null &");
+            // The worker's stdout/stderr (per-file outcome, error_log() from normalize()) land in a file
+            // that start.sh pre-creates and tails, so background failures are visible in `docker logs`.
+            system("nohup php ".ROOT.DS.'tools'.DS.'re-encode_mp4.php '.escapeshellarg($hash)." >> /var/log/nginx/pictshare/reencode.log 2>&1 &");
         }
         else if($plan['needed'])
         {

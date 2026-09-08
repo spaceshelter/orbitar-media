@@ -151,6 +151,8 @@ progressive, even dimensions, AAC or MP3 audio, one video + at most one audio st
 - Every generated file (normalised video, first-frame preview, gif->mp4) is written to a temp name and `rename`d
   into place; generation failures return 503 `no-store` instead of leaving an empty file that `file_exists()` would serve
   forever. ffmpeg is run through `exec()`, never `system()`, so nothing can leak into the HTTP body.
+- Background workers log to `/var/log/nginx/pictshare/reencode.log` (pre-created and tailed by `start.sh`, so it shows
+  up in `docker logs`); upload-path `error_log()` calls surface through nginx's error log as `PHP message:` lines.
 - Interlace detection decodes the first 5 frames (`ffprobe -read_intervals %+#5`) because ffprobe 4.4 reports
   `field_order=unknown` for most H.264 streams.
 - `getVideoDimensions` returns *displayed* dimensions (rotation from the display matrix applied), which is what
