@@ -77,6 +77,13 @@ echo ' [+] Creating config'
 touch data/sha1.csv
 chown nginx:nginx data/sha1.csv
 
+# conversion slot files shared by PHP-FPM (nginx) and the CLI tool (whoever runs it)
+for i in $(seq 0 $(( ${MAX_CONCURRENT_VIDEO_HANDLERS:-4} - 1 ))); do
+    touch "tmp/video-slot-$i.lock"
+    chmod 666 "tmp/video-slot-$i.lock"
+    chown nginx:nginx "tmp/video-slot-$i.lock"
+done
+
 _buildConfig > inc/config.inc.php
 
 echo ' [+] Starting nginx'
@@ -84,6 +91,9 @@ echo ' [+] Starting nginx'
 mkdir -p /var/log/nginx/pictshare
 touch /var/log/nginx/pictshare/access.log
 touch /var/log/nginx/pictshare/error.log
+# background re-encode workers (spawned by PHP-FPM as nginx) append here; must exist before tail -f starts
+touch /var/log/nginx/pictshare/reencode.log
+chown nginx:nginx /var/log/nginx/pictshare/reencode.log
 
 nginx
 
