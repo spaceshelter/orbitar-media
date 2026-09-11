@@ -40,24 +40,48 @@ class VideoController implements ContentController
     {
         $path = ROOT.DS.'data'.DS.$hash.DS.$hash;
 
-        // No /<width>/ variants for video: that was an unauthenticated full transcode on the
-        // request path (any numeric segment, no bound), nothing links to it, and it would
-        // compete with uploads for the conversion slots.
+        $size = false;
         foreach($url as $u)
             if(isSize($u)==true)
-            {
-                header('HTTP/1.1 404 Not Found');
-                header('Cache-Control: no-store');
-                die('video size variants are not available');
-            }
+                $size = $u;
 
+        // /<width>/ variants of the video itself are gone: that was an unauthenticated full
+        // transcode on the request path (any numeric segment, no bound), nothing links to it,
+        // and it would compete with uploads for the conversion slots. Sized *previews*
+        // (/preview/<width>/<hash>, used by the galleries) are still served, rendered as a
+        // scaled first frame straight from the original instead of from a resized video.
+        if($size !== false && !in_array('preview',$url))
+        {
+            header('HTTP/1.1 404 Not Found');
+            header('Cache-Control: no-store');
+            die('video size variants are not available');
+        }
 
         if(in_array('raw',$url))
             $this->serveMP4($path,$hash);
         else if(in_array('preview',$url))
         {
-            $preview = $path.'_preview.jpg';
-            if(!file_exists($preview) && !$this->saveFirstFrameOfMP4($path,$preview))
+            $dims = null;
+            if($size !== false)
+            {
+                $d = sizeStringToWidthHeight($size);
+                $w = (int)$d['width'];
+                $h = (int)$d['height'];
+                if($w < 1 || $w > 4096 || $h < 1 || $h > 4096)
+                {
+                    header('HTTP/1.1 404 Not Found');
+                    header('Cache-Control: no-store');
+                    die('unsupported preview size');
+                }
+                $dims = array('width' => $w, 'height' => $h, 'box' => strpos($size, 'x') !== false);
+                // same file name the old resize path produced, so previews rendered before this
+                // change are reused
+                $preview = ROOT.DS.'data'.DS.$hash.DS.$w.'_'.$hash.'_preview.jpg';
+            }
+            else
+                $preview = $path.'_preview.jpg';
+
+            if(!file_exists($preview) && !$this->saveFirstFrameOfMP4($path,$preview,$dims))
             {
                 header('HTTP/1.1 503 Service Unavailable');
                 header('Cache-Control: no-store');
@@ -623,14 +647,24 @@ class VideoController implements ContentController
     }
 
     /**
-     * First frame as JPEG. Rendered to a temp name and renamed into place so a concurrent
-     * request can never serve (and a CDN never cache) a half-written preview.
+     * First frame as JPEG, optionally scaled: $dims = array('width','height','box'); a plain
+     * width (box=false) fixes the width and keeps the aspect ratio, WxH (box=true) fits inside.
+     * Rendered to a temp name and renamed into place so a concurrent request can never serve
+     * (and a CDN never cache) a half-written preview.
      */
-    function saveFirstFrameOfMP4($path,$target)
+    function saveFirstFrameOfMP4($path,$target,$dims=null)
     {
         $bin = escapeshellcmd(FFMPEG_BINARY);
         $tmp = $this->tempNameFor($target);
-        $cmd = "$bin -y -nostdin -loglevel error -i ".escapeshellarg($path)." -vframes 1 -f image2 ".escapeshellarg($tmp).' 2>&1';
+        $filter = '';
+        if($dims)
+        {
+            $w = (int)$dims['width'];
+            $h = (int)$dims['height'];
+            $scale = !empty($dims['box']) ? "scale=$w:$h:force_original_aspect_ratio=decrease" : "scale=$w:-2";
+            $filter = ' -vf '.escapeshellarg($scale);
+        }
+        $cmd = "$bin -y -nostdin -loglevel error -i ".escapeshellarg($path)." -vframes 1$filter -f image2 ".escapeshellarg($tmp).' 2>&1';
         $output = array();
         $rc = 0;
         exec($cmd, $output, $rc);
