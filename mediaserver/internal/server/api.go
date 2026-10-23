@@ -41,6 +41,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		s.writeJSONStatus(w, r, http.StatusServiceUnavailable, kv{"status", "err"}, kv{"reason", "Uploads are disabled"})
 		return
 	}
+	// the whole request, not only the file part, is bounded in size and time
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxUploadBytes()+1<<20)
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(uploadReadTimeout))
 	tmp, custom, err := s.receiveUpload(r)
 	if tmp != "" {
 		defer os.Remove(tmp)
@@ -66,6 +69,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// uploadReadTimeout bounds how long receiving one upload may take (50 MB at ~60 KB/s).
+const uploadReadTimeout = 15 * time.Minute
+
 var (
 	errTooBig = errors.New("too big")
 	errNoFile = errors.New("no file")
@@ -88,6 +94,9 @@ func (s *Server) receiveUpload(r *http.Request) (tmp, custom string, err error) 
 			break
 		}
 		if err != nil {
+			if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+				err = errTooBig
+			}
 			return tmp, "", err
 		}
 		switch part.FormName() {
@@ -120,6 +129,9 @@ func (s *Server) saveLimited(r io.Reader) (string, error) {
 	n, err := io.Copy(f, io.LimitReader(r, s.maxUploadBytes()+1))
 	if cerr := f.Close(); err == nil {
 		err = cerr
+	}
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+		err = errTooBig
 	}
 	if err == nil && n > s.maxUploadBytes() {
 		err = errTooBig
@@ -195,7 +207,15 @@ func phpString(v any) string {
 
 // fileType is PictShare's getTypeOfFile(): the subtype of `file -bi`, "text" for any text/*,
 // "mp4" for octet-stream that is a playable MP4, false (ok=false) for an mp4 that isn't.
-func (s *Server) fileType(ctx context.Context, path string) (string, bool) {
+func (s *Server) fileType(ctx context.Context, path string) (typ string, ok bool) {
+	_ = s.withSlot(ctx, s.probeSlots, func() error {
+		typ, ok = s.detectType(ctx, path)
+		return nil
+	})
+	return typ, ok
+}
+
+func (s *Server) detectType(ctx context.Context, path string) (string, bool) {
 	res := proc.Run(ctx, proc.Limits{Timeout: 30 * time.Second}, "file", "-bi", path)
 	out := strings.TrimSpace(string(res.Stdout))
 	if res.Err != nil || !strings.Contains(out, "/") || !strings.Contains(out, ";") {
@@ -325,12 +345,17 @@ func (s *Server) uploadImage(ctx context.Context, tmp, custom string) *answer {
 }
 
 func (s *Server) withImageSlot(ctx context.Context, f func() error) error {
+	return s.withSlot(ctx, s.imageSlots, f)
+}
+
+// withSlot runs f once slots has room (or gives up with ctx).
+func (s *Server) withSlot(ctx context.Context, slots chan struct{}, f func() error) error {
 	select {
-	case s.imageSlots <- struct{}{}:
+	case slots <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	defer func() { <-s.imageSlots }()
+	defer func() { <-slots }()
 	return f()
 }
 
@@ -338,7 +363,15 @@ func (s *Server) withImageSlot(ctx context.Context, f func() error) error {
 // is handed out (stream copy, about as fast as copying the file); a real transcode runs in the
 // background, admitted only while a conversion slot is free.
 func (s *Server) uploadVideo(ctx context.Context, tmp, custom string) *answer {
-	probe := s.vid.Probe(ctx, tmp)
+	var probe *video.Probe
+	var plan *video.Plan
+	if err := s.withSlot(ctx, s.probeSlots, func() error {
+		probe = s.vid.Probe(ctx, tmp)
+		plan = s.vid.Plan(ctx, tmp, probe)
+		return nil
+	}); err != nil {
+		return &answer{reason: "Upload error"}
+	}
 	w, h, ok := 0, 0, false
 	if probe != nil {
 		w, h, ok = probe.Dimensions()
@@ -352,7 +385,6 @@ func (s *Server) uploadVideo(ctx context.Context, tmp, custom string) *answer {
 	}
 	busy := &answer{hash: name, reason: "System is busy, try again later"}
 
-	plan := s.vid.Plan(ctx, tmp, probe)
 	switch {
 	case plan != nil && plan.Video == "transcode":
 		if !s.tryVideoSlot() {

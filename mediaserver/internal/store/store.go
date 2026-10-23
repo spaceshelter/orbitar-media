@@ -159,14 +159,30 @@ func (s *Store) Put(src, hash string) (string, error) {
 			return "", err
 		}
 	}
+	dst := filepath.Join(dir, hash)
+	tmp := TempName(dst)
+	defer os.Remove(tmp)
+	if err := moveOrCopy(src, tmp); err != nil {
+		return "", err
+	}
+	if st, err := os.Stat(tmp); err != nil {
+		return "", err
+	} else if st.Size() == 0 {
+		return "", errors.New("empty file")
+	}
+	// link, unlike rename, fails when dst exists: of two writers racing for one name (two
+	// uploads, or a restore here and in the PHP service) only one publishes, and only that one
+	// writes the delete code
+	if err := os.Link(tmp, dst); err != nil {
+		if os.IsExist(err) {
+			return "", ErrExists
+		}
+		return "", err
+	}
 	code := hashcodec.Random(32)
 	if err := WriteAtomic(filepath.Join(dir, "deletecode"), func(tmp string) error {
 		return os.WriteFile(tmp, []byte(code), 0o644)
 	}); err != nil {
-		return "", err
-	}
-	dst := filepath.Join(dir, hash)
-	if err := WriteAtomic(dst, func(tmp string) error { return moveOrCopy(src, tmp) }); err != nil {
 		return "", err
 	}
 	if sum, err := FileSHA1(dst); err == nil {

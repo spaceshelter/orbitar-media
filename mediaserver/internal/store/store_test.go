@@ -1,8 +1,10 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -44,6 +46,41 @@ func TestPutLookupDelete(t *testing.T) {
 	}
 	if err := s.Delete("abc.txt"); err != nil || s.Exists("abc.txt") {
 		t.Fatal("not deleted")
+	}
+}
+
+// Of several writers racing for one name exactly one wins, and the delete code is the winner's.
+func TestPutRace(t *testing.T) {
+	s := &Store{Root: t.TempDir()}
+	srcDir := t.TempDir()
+	for round := range 50 {
+		name := fmt.Sprintf("race%d.txt", round)
+		var wg sync.WaitGroup
+		codes := make([]string, 8)
+		errs := make([]error, 8)
+		for i := range codes {
+			src := filepath.Join(srcDir, fmt.Sprint(round, "-", i))
+			os.WriteFile(src, []byte(fmt.Sprint("content ", i)), 0o600)
+			wg.Go(func() { codes[i], errs[i] = s.Put(src, name) })
+		}
+		wg.Wait()
+		winners := 0
+		for i, err := range errs {
+			switch err {
+			case nil:
+				winners++
+				b, _ := os.ReadFile(s.Path(name))
+				if string(b) != fmt.Sprint("content ", i) || s.DeleteCode(name) != codes[i] {
+					t.Errorf("%s: stored file or delete code isn't the winner's", name)
+				}
+			case ErrExists:
+			default:
+				t.Errorf("put: %v", err)
+			}
+		}
+		if winners != 1 {
+			t.Fatalf("%s: %d writers won", name, winners)
+		}
 	}
 }
 

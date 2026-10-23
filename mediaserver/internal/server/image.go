@@ -168,7 +168,7 @@ func (s *Server) handleGifMP4(w http.ResponseWriter, r *http.Request, hash strin
 	case slices.Contains(segs, "raw"):
 		s.serveFile(w, r, mp4, "video/mp4")
 	case slices.Contains(segs, "preview"):
-		preview := mp4 + "_preview.jpg"
+		preview := s.store.VariantPath(hash, hash+"mp4_preview.jpg") // not next to mp4: that may be a shared file in read-only mode
 		if err := s.generate(r.Context(), preview, func(ctx context.Context, tmp string) error {
 			return s.vid.FirstFrame(ctx, mp4, tmp, nil)
 		}); err != nil {

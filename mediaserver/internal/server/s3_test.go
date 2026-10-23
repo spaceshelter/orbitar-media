@@ -24,12 +24,17 @@ type fakeS3 struct {
 	mu      sync.Mutex
 	objects map[string][]byte
 	gets    int
+	down    bool // every request fails
 }
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/media/")
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.down {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
 	switch r.Method {
 	case http.MethodPut:
 		b, _ := io.ReadAll(r.Body)
@@ -144,5 +149,46 @@ func TestS3QueueAndRestore(t *testing.T) {
 	}
 	if _, ok := fake.get(up["hash"].(string)); ok {
 		t.Error("S3 copy survived the delete")
+	}
+}
+
+// An upload whose S3 copy is still pending survives the cleanup service evicting its directory:
+// the marker is a hard link, and the next run copies from it.
+func TestS3PendingSurvivesEviction(t *testing.T) {
+	fake := &fakeS3{objects: map[string][]byte{}, down: true}
+	s3srv := httptest.NewServer(fake)
+	defer s3srv.Close()
+	data := t.TempDir()
+
+	h := newS3Server(t, data, fake, s3srv.URL)
+	src := pngBytes(23, 17)
+	up := h.upload("a.png", src)
+	hash := up["hash"].(string)
+	marker := filepath.Join(data, ".s3-pending", hash)
+	if st, err := os.Stat(marker); err != nil || st.Size() != int64(len(src)) {
+		t.Fatalf("marker is not a link to the upload: %v", err)
+	}
+	h.ts.Close()
+	h.s.Shutdown(t.Context())
+
+	if err := os.RemoveAll(filepath.Join(data, hash)); err != nil { // what cleanup.sh does
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.down = false
+	fake.mu.Unlock()
+	newS3Server(t, data, fake, s3srv.URL)
+	waitFor(t, "upload from the marker", func() bool { b, ok := fake.get(hash); return ok && bytes.Equal(b, src) })
+	waitFor(t, "marker removal", func() bool { _, err := os.Stat(marker); return os.IsNotExist(err) })
+}
+
+// Custom names are restored too (rate limited, unlike dimension hashes).
+func TestS3RestoreCustomName(t *testing.T) {
+	fake := &fakeS3{objects: map[string][]byte{"my-logo.png": pngBytes(9, 9)}}
+	s3srv := httptest.NewServer(fake)
+	defer s3srv.Close()
+	h := newS3Server(t, t.TempDir(), fake, s3srv.URL)
+	if r := h.get("/my-logo.png"); r.code != 200 {
+		t.Fatalf("restore of a custom name: %d", r.code)
 	}
 }

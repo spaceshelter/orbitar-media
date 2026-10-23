@@ -394,6 +394,29 @@ func TestTextAndGzip(t *testing.T) {
 	if !bytes.Contains(page, []byte("hello &lt;world&gt;")) || bytes.Contains(page, []byte("<world>")) {
 		t.Error("text page doesn't escape the content")
 	}
+	req, _ := http.NewRequest(http.MethodHead, h.ts.URL+"/"+hash, nil)
+	if r := h.do(req); r.code != 200 || !strings.HasPrefix(r.hdr.Get("Content-Type"), "text/html") || len(r.body) != 0 {
+		t.Errorf("HEAD text page: %d %q", r.code, r.hdr.Get("Content-Type"))
+	}
+}
+
+// The whole upload request is bounded, not only the file part.
+func TestUploadRequestLimit(t *testing.T) {
+	h := newHarness(t, nil)
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, _ := mw.CreateFormFile("file", "a.png")
+	_, _ = fw.Write(pngBytes(8, 8))
+	jw, _ := mw.CreateFormField("junk")
+	_, _ = jw.Write(bytes.Repeat([]byte("x"), 7_000_000)) // MaxUploadMB is 5
+	_ = mw.Close()
+	req, _ := http.NewRequest(http.MethodPost, h.ts.URL+"/api/upload.php", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Client-ID secret")
+	r := h.do(req)
+	if !bytes.Contains(r.body, []byte("File too big")) {
+		t.Fatalf("oversized request: %d %s", r.code, r.body)
+	}
 }
 
 func makeVideo(t *testing.T, dir, name string, args ...string) []byte {

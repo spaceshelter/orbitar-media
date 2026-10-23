@@ -59,8 +59,11 @@ type Server struct {
 	api    *http.Client // coub, vimeo
 	logger *log.Logger
 
-	videoSlots chan struct{}
-	imageSlots chan struct{}
+	videoSlots   chan struct{}
+	imageSlots   chan struct{}
+	probeSlots   chan struct{} // ffprobe / file runs on uploads
+	textSlots    chan struct{} // text pages rendered in memory
+	restoreSlots chan struct{} // S3 downloads
 
 	restoreMu  sync.Mutex
 	restoring  map[string]*sync.WaitGroup
@@ -85,14 +88,17 @@ func New(cfg Config, st *store.Store, s3 *s3store.Client, codec *hashcodec.Codec
 	}
 	s := &Server{
 		cfg: cfg, store: st, s3: s3, codec: codec, img: img, vid: vid,
-		fetch:      newFetchClient(cfg.AllowPrivateFetch),
-		api:        &http.Client{Timeout: 10 * time.Second},
-		logger:     log.New(os.Stdout, "", 0),
-		videoSlots: make(chan struct{}, cfg.VideoSlots),
-		imageSlots: make(chan struct{}, cfg.ImageSlots),
-		restoring:  map[string]*sync.WaitGroup{},
-		misses:     newMissCache(20000, 10*time.Minute),
-		s3Lookups:  newRateLimiter(10, 20),
+		fetch:        newFetchClient(cfg.AllowPrivateFetch),
+		api:          &http.Client{Timeout: 10 * time.Second},
+		logger:       log.New(os.Stdout, "", 0),
+		videoSlots:   make(chan struct{}, cfg.VideoSlots),
+		imageSlots:   make(chan struct{}, cfg.ImageSlots),
+		probeSlots:   make(chan struct{}, 2*cfg.VideoSlots),
+		textSlots:    make(chan struct{}, 2),
+		restoreSlots: make(chan struct{}, 8),
+		restoring:    map[string]*sync.WaitGroup{},
+		misses:       newMissCache(20000, 10*time.Minute),
+		s3Lookups:    newRateLimiter(10, 20),
 	}
 	s.bgCtx, s.bgCancel = context.WithCancel(context.Background())
 	s.queue = newUploadQueue(s)

@@ -22,10 +22,8 @@ var (
 	videoExts = []string{"mp4"}
 	textExts  = []string{"txt", "text", "csv"}
 
-	// names worth asking S3 about besides dimension hashes: random names (text, setups without
-	// a key) and the coub thumbnails of an earlier system
-	randomNameRe = regexp.MustCompile(`^[0-9a-z]{6,12}\.[a-z]{3,4}$`)
-	coubNameRe   = regexp.MustCompile(`^coub_\w{1,40}\.jpg$`)
+	// what dimension hashes look like (34 base62 chars in production)
+	dimsHashShape = regexp.MustCompile(`^[0-9A-Za-z]{30,}\.`)
 )
 
 func servedExt(ext string) bool {
@@ -119,8 +117,9 @@ func (s *Server) deleteHash(ctx context.Context, hash string) {
 	}
 }
 
-// s3Candidate: only names this service could have produced are looked up in S3. Dimension
-// hashes must decrypt with our key; other shapes are rate limited.
+// s3Candidate: which names are looked up in S3. Dimension hashes must decrypt with our key;
+// other names (random ones, custom ones, the coub thumbnails of an earlier system) are rate
+// limited.
 func (s *Server) s3Candidate(name string) bool {
 	if !store.ValidName(name) || !servedExt(store.Ext(name)) {
 		return false
@@ -129,17 +128,17 @@ func (s *Server) s3Candidate(name string) bool {
 		if _, err := s.codec.Decode(name); err == nil {
 			return true
 		}
+		if dimsHashShape.MatchString(name) {
+			return false
+		}
 	}
-	if randomNameRe.MatchString(name) || coubNameRe.MatchString(name) {
-		return s.s3Lookups.allow()
-	}
-	return false
+	return s.s3Lookups.allow()
 }
 
 // restoreFromS3 pulls name into the data directory when S3 has it. Concurrent requests for the
-// same name share one download.
+// same name share one download, and at most cap(restoreSlots) downloads run at a time.
 func (s *Server) restoreFromS3(ctx context.Context, name string) bool {
-	if s.s3 == nil || s.misses.has(name) || !s.s3Candidate(name) {
+	if s.s3 == nil || s.misses.has(name) {
 		return false
 	}
 	s.restoreMu.Lock()
@@ -147,6 +146,10 @@ func (s *Server) restoreFromS3(ctx context.Context, name string) bool {
 		s.restoreMu.Unlock()
 		wg.Wait()
 		return s.store.Exists(name)
+	}
+	if !s.s3Candidate(name) {
+		s.restoreMu.Unlock()
+		return false
 	}
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
@@ -162,6 +165,12 @@ func (s *Server) restoreFromS3(ctx context.Context, name string) bool {
 	if s.store.Exists(name) {
 		return true
 	}
+	select {
+	case s.restoreSlots <- struct{}{}:
+	case <-ctx.Done():
+		return false
+	}
+	defer func() { <-s.restoreSlots }()
 	// detached from the request: a client hanging up must not leave half the work done
 	dctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

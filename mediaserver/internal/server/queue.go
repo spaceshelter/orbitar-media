@@ -7,18 +7,25 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/spaceshelter/orbitar-media/mediaserver/internal/store"
 )
 
-// uploadQueue copies stored files to S3 in the background. A marker file per pending hash
+// uploadQueue copies stored files to S3 in the background. A marker per pending hash
 // (data/.s3-pending/<hash>, hidden from the cleanup service's `ls`) survives restarts and is
-// swept at startup; failures are retried with backoff. One worker, so pushes of the same hash
-// (the original, then its transcode) can't overtake each other.
+// swept at startup; failures are retried with backoff. The marker is a hard link to the stored
+// file, so the copy still reaches S3 when the cleanup service evicts the hash directory first.
+// One worker, so pushes of the same hash (the original, then its transcode) can't overtake
+// each other.
 type uploadQueue struct {
 	s       *Server
 	dir     string
 	mu      sync.Mutex
 	pending map[string]int // hash -> generation (bumped by every push)
 	wake    chan struct{}
+
+	inflight        string // hash the worker is uploading
+	inflightDeleted bool   // inflight was deleted meanwhile: remove the copy once it lands
 }
 
 func newUploadQueue(s *Server) *uploadQueue {
@@ -32,11 +39,12 @@ func (q *uploadQueue) push(hash string) {
 	if !q.enabled() {
 		return
 	}
-	if err := os.MkdirAll(q.dir, 0o755); err == nil {
-		_ = os.WriteFile(filepath.Join(q.dir, hash), nil, 0o644)
-	}
 	q.mu.Lock()
+	q.writeMarker(hash)
 	q.pending[hash]++
+	if q.inflight == hash {
+		q.inflightDeleted = false
+	}
 	q.mu.Unlock()
 	select {
 	case q.wake <- struct{}{}:
@@ -44,12 +52,33 @@ func (q *uploadQueue) push(hash string) {
 	}
 }
 
+// writeMarker links the stored file into the marker directory (an empty marker when linking
+// fails). Called with q.mu held, so the worker can't remove a marker it hasn't seen.
+func (q *uploadQueue) writeMarker(hash string) {
+	if err := os.MkdirAll(q.dir, 0o755); err != nil {
+		return
+	}
+	marker := filepath.Join(q.dir, hash)
+	tmp := store.TempName(marker)
+	if err := os.Link(q.s.store.Path(hash), tmp); err != nil {
+		if err := os.WriteFile(tmp, nil, 0o644); err != nil {
+			return
+		}
+	}
+	if err := os.Rename(tmp, marker); err != nil {
+		os.Remove(tmp)
+	}
+}
+
 // forget drops a pending upload (the file was deleted).
 func (q *uploadQueue) forget(hash string) {
 	q.mu.Lock()
 	delete(q.pending, hash)
-	q.mu.Unlock()
 	os.Remove(filepath.Join(q.dir, hash))
+	if q.inflight == hash {
+		q.inflightDeleted = true
+	}
+	q.mu.Unlock()
 }
 
 func (q *uploadQueue) start() {
@@ -58,12 +87,16 @@ func (q *uploadQueue) start() {
 	}
 	if entries, err := os.ReadDir(q.dir); err == nil {
 		for _, e := range entries {
-			if !e.IsDir() && !isTempName(e.Name()) {
+			switch {
+			case e.IsDir():
+			case isTempName(e.Name()): // a marker link interrupted by a crash
+				os.Remove(filepath.Join(q.dir, e.Name()))
+			default:
 				q.pending[e.Name()]++
 			}
 		}
-		if len(entries) > 0 {
-			log.Printf("s3: %d uploads pending from an earlier run", len(entries))
+		if len(q.pending) > 0 {
+			log.Printf("s3: %d uploads pending from an earlier run", len(q.pending))
 		}
 	}
 	q.s.bgWG.Add(1)
@@ -92,6 +125,7 @@ func (q *uploadQueue) run() {
 			hash, gen = h, g
 			break
 		}
+		q.inflight, q.inflightDeleted = hash, false
 		q.mu.Unlock()
 
 		if hash == "" {
@@ -110,6 +144,8 @@ func (q *uploadQueue) run() {
 
 		err := q.upload(hash)
 		q.mu.Lock()
+		deleted := q.inflightDeleted
+		q.inflight, q.inflightDeleted = "", false
 		switch {
 		case err == nil || os.IsNotExist(err):
 			if os.IsNotExist(err) {
@@ -128,14 +164,25 @@ func (q *uploadQueue) run() {
 			log.Printf("s3: upload of %s failed (attempt %d, retry in %s): %v", hash, attempts[hash], d, err)
 		}
 		q.mu.Unlock()
+		if deleted && err == nil {
+			// deleted while it was being copied: the delete may have reached S3 first
+			if derr := q.s.s3.Delete(q.s.bgCtx, hash); derr != nil {
+				log.Printf("s3: delete of %s after its upload: %v", hash, derr)
+			}
+		}
 		if q.s.bgCtx.Err() != nil {
 			return
 		}
 	}
 }
 
+// upload copies hash from its marker, or from the data directory when the marker is an empty
+// one.
 func (q *uploadQueue) upload(hash string) error {
-	path := q.s.store.Path(hash)
+	path := filepath.Join(q.dir, hash)
+	if st, err := os.Stat(path); err != nil || st.Size() == 0 {
+		path = q.s.store.Path(hash)
+	}
 	if _, err := os.Stat(path); err != nil {
 		return err
 	}

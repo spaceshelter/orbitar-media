@@ -40,11 +40,12 @@ timeout and `ulimit -v`, so a bad input can only fail its own request.
   (`MAX_CONCURRENT_VIDEO_HANDLERS`) instead of lock files.
 - **Caching**: strong ETag (inode-mtime-size) and Last-Modified on files, `Cache-Control: public, max-age=31536000`
   on success, `no-store` on every error. Range, If-Range, If-None-Match and If-Modified-Since come from Go's `http.ServeContent`.
-- **S3**: on a local miss, the original is restored from the bucket. Only names this service could have produced are
-  looked up: dimension hashes must decrypt with the key, other names are rate limited, and misses are cached.
+- **S3**: on a local miss, the original is restored from the bucket. Dimension hashes must decrypt with the key,
+  other names are rate limited, misses are cached, and concurrent downloads are capped.
   Uploads go to S3 from a background queue: a marker per pending file in `data/.s3-pending/` (which the
-  cleanup service's `ls` doesn't see), retries with backoff, and a sweep at startup. An S3 outage delays the copy, not
-  the upload.
+  cleanup service's `ls` doesn't see), retries with backoff, and a sweep at startup. The marker is a hard link to the
+  file, so a copy still pending when the cleanup service evicts the directory is not lost. An S3 outage delays the
+  copy, not the upload.
 - **Read-only mode** (`READ_ONLY=1`): never writes to the data directory. Uploads and deletes return 503. Files
   restored from S3 and generated variants go to a scratch overlay, which is cleared at startup. Used to run next to
   PictShare for comparison.
