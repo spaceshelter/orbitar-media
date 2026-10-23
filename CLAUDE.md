@@ -190,6 +190,8 @@ so the default `docker compose up` (and the prod deploy) doesn't start it.
   need vips/ffmpeg/file, which the test stage installs).
 - `mediaserver/difftest/` compares it against the PHP stack with s3mock (never the real bucket; the local `.env`
   points at the production bucket).
+- Shadow run in production (cutover step 1 in `mediaserver/README.md`): `--profile mediaserver`, read-only, capped at
+  1 CPU / 1 GB, no Caddy route; `mediaserver/difftest/replay.py` replays pictshare's access log against both.
 
 ## Environment Variables
 
