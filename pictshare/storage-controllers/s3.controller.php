@@ -13,11 +13,13 @@ class S3Storage implements StorageController
 {
 	private $s3;
 	function connect(){
-		require_once(ROOT.DS.'storage-controllers'.DS.'s3'.DS.'aws-autoloader.php');
+		require_once(ROOT.DS.'storage-controllers'.DS.'s3'.DS.'vendor'.DS.'autoload.php');
         $client_args = [
             'version' => 'latest',
             'region' => (defined('S3_REGION') && S3_REGION ? S3_REGION : 'us-east-1'),
             'use_path_style_endpoint' => true,
+            // no ~/.aws lookups: open_basedir blocks them and every request logged a warning
+            'use_aws_shared_config_files' => false,
             'credentials' => [
                 'key' => S3_ACCESS_KEY,
                 'secret' => S3_SECRET_KEY,

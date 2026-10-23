@@ -4,7 +4,8 @@ spl_autoload_register('autoload');
 //disable output buffering
 if (ob_get_level()) ob_end_clean();
 
-error_reporting(E_ALL & ~E_NOTICE);
+// no E_DEPRECATED: on PHP 8.4 they flood nginx's (truncating) FastCGI stderr and hide real errors
+error_reporting(E_ALL & ~E_NOTICE & ~E_DEPRECATED);
 
 if(!defined('FFMPEG_BINARY'))
     define('FFMPEG_BINARY',ROOT.DS.'bin'.DS.'ffmpeg');
@@ -36,6 +37,7 @@ function architect($url)
 
     //check all elements for a valid hash
     $hash = false;
+    $sc = false;
     foreach($u as $el)
     {
         if(isExistingHash($el))
@@ -96,8 +98,13 @@ function architect($url)
             if(startsWith($el,'delete_'))
             {
                 $code = substr($el,7);
+                $own = getDeleteCodeOfHash($hash);
+                // start.sh defines MASTER_DELETE_CODE/IP as '' when unset: empty means disabled
                 //@todo: allow MASTER_DELETE_IP to be CIDR range or coma separated
-                if(getDeleteCodeOfHash($hash)==$code || (defined('MASTER_DELETE_CODE') && MASTER_DELETE_CODE==$code ) || (defined('MASTER_DELETE_IP') && MASTER_DELETE_IP==getUserIP()) )
+                if($code !== '' && (
+                       (is_string($own) && $own !== '' && hash_equals($own, $code))
+                    || (defined('MASTER_DELETE_CODE') && MASTER_DELETE_CODE !== '' && hash_equals(MASTER_DELETE_CODE, $code))
+                    || (defined('MASTER_DELETE_IP') && MASTER_DELETE_IP !== '' && MASTER_DELETE_IP==getUserIP()) ))
                 {
                     deleteHash($hash);
                     exit($hash.' deleted successfully');
@@ -851,6 +858,21 @@ function isCloudflare() {
     $ipCheck        = _cloudflare_CheckIP($_SERVER['REMOTE_ADDR']);
     $requestCheck   = _cloudflare_Requests_Check();
     return ($ipCheck && $requestCheck);
+}
+
+/**
+ * The Client-ID secret, checked in PHP as well as in Caddy, for endpoints that must never be open
+ * even if a request finds a way past the edge rule. Fails closed when CLIENT_ID is not set.
+ */
+function requireClientId()
+{
+    $expected = getenv('CLIENT_ID');
+    if(!$expected || !hash_equals('Client-ID '.$expected, $_SERVER['HTTP_AUTHORIZATION'] ?? ''))
+    {
+        http_response_code(403);
+        header('Cache-Control: no-store');
+        exit(json_encode(array('status'=>'err','reason'=>'Access denied')));
+    }
 }
 
 function executeUploadPermission()

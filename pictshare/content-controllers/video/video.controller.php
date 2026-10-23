@@ -3,6 +3,10 @@
 define('MAX_CONCURRENT_VIDEO_HANDLERS',
     getenv('MAX_CONCURRENT_VIDEO_HANDLERS') !== false ? (int) getenv('MAX_CONCURRENT_VIDEO_HANDLERS') : 4
 );
+// Address-space cap per ffmpeg/ffprobe process. A 4K x264 transcode peaks at ~1.9 GB virtual / 1.5 GB resident.
+define('FFMPEG_MEMORY_LIMIT_MB',
+    getenv('FFMPEG_MEMORY_LIMIT_MB') !== false ? (int) getenv('FFMPEG_MEMORY_LIMIT_MB') : 2560
+);
 
 /**
  * MP4 handling.
@@ -185,6 +189,17 @@ class VideoController implements ContentController
     }
 
     /**
+     * Wraps an ffmpeg/ffprobe command line in a memory cap (ulimit -v) and a hard wall-clock limit
+     * (SIGKILL after $seconds), so a pathological input can neither eat the host's RAM nor run forever.
+     * A killed run returns rc 9 to exec() (PHP reports the signal; ffmpeg hitting the memory cap exits with its
+     * own error code) and leaves no output, which every caller already treats as failure.
+     */
+    static function limited($cmd, $seconds)
+    {
+        return 'ulimit -v '.(max(256, (int)FFMPEG_MEMORY_LIMIT_MB) * 1024).' && timeout -s KILL '.(int)$seconds.' '.$cmd;
+    }
+
+    /**
      * Per-process temp name next to $target (same filesystem, so the final rename is atomic).
      * Unique per call: two requests generating the same uncached file must not share it, or the
      * first rename would pull the pathname from under the second encoder.
@@ -316,7 +331,7 @@ class VideoController implements ContentController
     {
         $bin = escapeshellcmd(preg_replace('/ffmpeg$/', 'ffprobe', FFMPEG_BINARY));
         $cmd = "$bin -v error -print_format json -show_format -show_streams ".escapeshellarg($file)." 2>/dev/null";
-        $json = shell_exec($cmd);
+        $json = shell_exec(self::limited($cmd, 60));
         if(!$json)
         {
             // legitimate for a non-media file, but also what a missing/crashing ffprobe looks like
@@ -391,7 +406,7 @@ class VideoController implements ContentController
         $bin = escapeshellcmd(preg_replace('/ffmpeg$/', 'ffprobe', FFMPEG_BINARY));
         $cmd = "$bin -v error -select_streams ".(int)$streamIndex." -read_intervals ".escapeshellarg('%+#5')
              ." -show_entries frame=interlaced_frame -of csv=p=0 ".escapeshellarg($file)." 2>/dev/null";
-        $out = shell_exec($cmd);
+        $out = shell_exec(self::limited($cmd, 60));
         if(!$out) return false;
         foreach(explode("\n", trim($out)) as $line)
             if(trim($line) === '1') return true;
@@ -609,11 +624,13 @@ class VideoController implements ContentController
         $cmd = $this->normalizationCommand($file, $plan, $out);
         $output = array();
         $rc = 0;
-        exec($cmd.' 2>&1', $output, $rc); // exec(), not system(): nothing may leak into the HTTP response
+        // stream copy runs on the upload request; a real transcode runs in the background worker
+        $seconds = $plan['video'] === 'transcode' ? 3600 : 300;
+        exec(self::limited($cmd, $seconds).' 2>&1', $output, $rc); // exec(), not system(): nothing may leak into the HTTP response
 
         if($rc !== 0 || !is_file($out) || filesize($out) === 0 || $this->primaryVideoStream($this->probe($out) ?: array('streams'=>array())) === null)
         {
-            error_log("pictshare: ffmpeg failed (rc=$rc) for $file: $cmd :: ".implode(' | ', array_slice($output, -5)));
+            error_log("pictshare: ffmpeg failed (rc=$rc".($rc === 9 || $rc === 137 ? ', SIGKILL: time limit or OOM' : '').") for $file: $cmd :: ".implode(' | ', array_slice($output, -5)));
             @unlink($out);
             return false;
         }
@@ -664,10 +681,10 @@ class VideoController implements ContentController
             $scale = !empty($dims['box']) ? "scale=$w:$h:force_original_aspect_ratio=decrease" : "scale=$w:-2";
             $filter = ' -vf '.escapeshellarg($scale);
         }
-        $cmd = "$bin -y -nostdin -loglevel error -i ".escapeshellarg($path)." -vframes 1$filter -f image2 ".escapeshellarg($tmp).' 2>&1';
+        $cmd = "$bin -y -nostdin -loglevel error -i ".escapeshellarg($path)." -vframes 1$filter -f image2 ".escapeshellarg($tmp);
         $output = array();
         $rc = 0;
-        exec($cmd, $output, $rc);
+        exec(self::limited($cmd, 120).' 2>&1', $output, $rc);
         if($rc !== 0 || !is_file($tmp) || filesize($tmp) === 0 || !rename($tmp, $target))
         {
             error_log("pictshare: preview render failed (rc=$rc) for $path :: ".implode(' | ', array_slice($output, -3)));
