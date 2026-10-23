@@ -21,10 +21,10 @@ else if(!isFolderWritable(ROOT.DS.'tmp'))
 // check if client has permission to upload
 executeUploadPermission();
 
-$hash = sanatizeString(trim($_REQUEST['hash']))?sanatizeString(trim($_REQUEST['hash'])):false;
+$hash = sanatizeString(trim($_REQUEST['hash'] ?? ''))?sanatizeString(trim($_REQUEST['hash'] ?? '')):false;
 
 // check for POST upload
-if ($_FILES['file']["error"] == UPLOAD_ERR_OK)
+if (isset($_FILES['file']) && $_FILES['file']["error"] == UPLOAD_ERR_OK)
 {
     //get the file type
     $type = getTypeOfFile($_FILES['file']["tmp_name"]);
@@ -38,6 +38,7 @@ if ($_FILES['file']["error"] == UPLOAD_ERR_OK)
     if(defined('MAX_UPLOAD_SIZE') && $_FILES['file']['size'] * 0.000001 > MAX_UPLOAD_SIZE)
         exit(json_encode(array('status'=>'err','reason'=>'File too big. '.MAX_UPLOAD_SIZE.'mb max')));
 
+    $answer = false;
     //cross check filetype for controllers
     //
     //image?
@@ -71,7 +72,7 @@ if ($_FILES['file']["error"] == UPLOAD_ERR_OK)
     if(!$answer)
         $answer = array('status'=>'err','reason'=>'Unsupported filetype: '.$type,'filetype'=>$type);
 
-    if($answer['hash'] && $answer['status']=='ok')
+    if(!empty($answer['hash']) && $answer['status']=='ok')
     {
         $answer['filetype'] = $type;
         //add this sha1 to the list

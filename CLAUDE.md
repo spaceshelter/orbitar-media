@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Self-hosted media server for [Orbitar](https://github.com/spaceshelter/orbitar/), based on a patched version of [PictShare](https://github.com/HaschekSolutions/pictshare). Handles upload, storage, and serving of images, videos (MP4), and text files with deduplication, EXIF stripping, and optional S3 backup.
 
-**Stack:** PHP 7, Nginx, Alpine Linux, Docker Compose, Caddy (reverse proxy)
+**Stack:** PHP 8.4 (Alpine 3.24 `php84`, needs >= 8.4.27 for PHP2Shell), ffmpeg 8.1, Nginx, Docker Compose, Caddy (reverse proxy).
+The AWS SDK is installed by Composer at image build (`storage-controllers/s3/composer.json` + `composer.lock`, S3 service only); `vendor/` is not committed.
 
 ## Common Commands
 
@@ -77,7 +78,7 @@ Three Docker containers orchestrated via docker-compose.yml:
 ┌─────────────────────────────────────────────────────────────┐
 │  Caddy (reverse proxy)                                      │
 │  - Routes traffic to pictshare                              │
-│  - Enforces Client-ID header on POST /api/*                 │
+│  - Enforces Client-ID header on every /api/* request        │
 │  - Serves /static/ files                                    │
 └─────────────────────────┬───────────────────────────────────┘
                           │
@@ -129,7 +130,7 @@ progressive, even dimensions, AAC or MP3 audio, one video + at most one audio st
   `scale=w='min(iw,3840)':h='min(ih,2160)':force_original_aspect_ratio=decrease`, never upscaling) so the result stays
   within level 5.2; the trigger is pixel budget > 3840*2160, either side > 4096, *average* fps > 60, or a source level > 5.2 (the nominal
   `r_frame_rate` never triggers, VFR sources inflate it, but it does pin `fps=` to the real rate during a transcode because
-  ffmpeg 4.4 pads VFR up to the nominal rate); the ffmpeg 4.4 `fps` filter does not take expressions, so the caps are fixed values chosen
+  ffmpeg 4.4 pads VFR up to the nominal rate; still applied on 8.1, decisions unchanged); the ffmpeg 4.4 `fps` filter does not take expressions, so the caps are fixed values chosen
   from the probe. `-map_chapters -1` keeps chapters from re-materialising as a data stream (which would fail the
   stream-count check on every later scan). The output replaces the file atomically (`rename` inside `data/<hash>/`, per-process
   temp name `<target>.<pid>.<rand>.tmp` so concurrent generators never share one), and the synchronous path registers the
@@ -149,13 +150,17 @@ progressive, even dimensions, AAC or MP3 audio, one video + at most one audio st
   Admission for background transcodes probes the same slots (no more `ps aux | grep`). Lock files are chmod 0666; when
   another user (root via `docker exec`) owns one it is opened read-only and flocked, never unlinked and recreated (that
   would be a second inode, i.e. a duplicate slot). `addSha1` appends under flock.
-- Every generated file (normalised video, first-frame preview, gif->mp4) is written to a temp name and `rename`d
+- Every generated file (normalised video, first-frame preview, gif->mp4, resized/rotated/filtered/webp image variants) is written to a temp name and `rename`d
   into place; generation failures return 503 `no-store` instead of leaving an empty file that `file_exists()` would serve
   forever. ffmpeg is run through `exec()`, never `system()`, so nothing can leak into the HTTP body.
 - Background workers log to `/var/log/nginx/pictshare/reencode.log` (pre-created and tailed by `start.sh`, so it shows
   up in `docker logs`); upload-path `error_log()` calls surface through nginx's error log as `PHP message:` lines.
 - Interlace detection decodes the first 5 frames (`ffprobe -read_intervals %+#5`) because ffprobe 4.4 reports
   `field_order=unknown` for most H.264 streams.
+- Every ffmpeg/ffprobe call goes through `VideoController::limited($cmd, $seconds)`: `ulimit -v` (`FFMPEG_MEMORY_LIMIT_MB`,
+  default 2560; a 4K x264 transcode peaks at ~1.9 GB virtual / 1.5 GB resident on 2 cores) plus `timeout -s KILL`
+  (probe 60 s, preview 120 s, upload remux 300 s, gif->mp4 600 s, background transcode 3600 s). A killed run shows up as
+  rc 9 in `exec()`; ffmpeg refusing at the memory cap exits 244.
 - `getVideoDimensions` returns *displayed* dimensions (rotation from the display matrix applied), which is what
   the dimension-encoding hash should describe.
 - `isProperMP4` (upload type detection) still requires an MP4/MOV container with an H.264 stream; HEVC/AV1/WebM
@@ -187,6 +192,9 @@ Key variables in `.env` (see `.env.sample`):
 | `HASH_DIMS_AES_KEY` | AES key for encoding dimensions in hash |
 | `S3_BUCKET/REGION/ACCESS_KEY/SECRET_KEY` | S3 backup configuration |
 | `REQUIRED_SPACE` | Minimum free GB before cleanup runs (default: 10) |
+| `PHP_MEMORY_LIMIT` | MB per PHP request (default 256: PHP 8.4's GD needs a second full-size buffer for large PNG decode / WebP encode) |
+| `FFMPEG_MEMORY_LIMIT_MB` | `ulimit -v` per ffmpeg/ffprobe run (default 2560) |
+| `MASTER_DELETE_CODE` / `MASTER_DELETE_IP` | Optional admin delete; empty means disabled |
 
 ## CI/CD
 
@@ -195,17 +203,17 @@ Key variables in `.env` (see `.env.sample`):
 
 ## API Quick Reference
 
-All POST requests to `/api/*` require `Authorization: Client-ID <value>` header (enforced by Caddy).
+Every request to `/api/*`, any method, requires `Authorization: Client-ID <value>` (enforced by Caddy; `geturl.php` checks it again itself).
 
 ```bash
 # Upload file
 curl -k -H "Authorization: Client-ID $CLIENT_ID" -F "file=@image.jpg" https://orbitar.media.local/api/upload.php
 
-# Upload from URL (GET, no auth required)
-curl -k "https://orbitar.media.local/api/geturl.php?url=https://example.com/image.jpg"
+# Upload from URL (server-side fetch: needs Client-ID, checked by Caddy and again in geturl.php)
+curl -k -H "Authorization: Client-ID $CLIENT_ID" "https://orbitar.media.local/api/geturl.php?url=https://example.com/image.jpg"
 
-# Get file info (GET, no auth required)
-curl -k "https://orbitar.media.local/api/info.php?hash=abc123.jpg"
+# Get file info (also needs Client-ID)
+curl -k -H "Authorization: Client-ID $CLIENT_ID" "https://orbitar.media.local/api/info.php?hash=abc123.jpg"
 
 # Create text paste
 curl -k -H "Authorization: Client-ID $CLIENT_ID" -F "api_paste_code=Hello" https://orbitar.media.local/api/pastebin.php

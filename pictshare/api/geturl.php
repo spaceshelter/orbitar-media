@@ -14,6 +14,8 @@ loadAllContentControllers();
 
 // check if client has permission to upload
 executeUploadPermission();
+// the server fetches whatever URL it is given: never without the secret
+requireClientId();
 
 // check write permissions first
 if(!isFolderWritable(ROOT.DS.'data'))
@@ -21,9 +23,9 @@ if(!isFolderWritable(ROOT.DS.'data'))
 else if(!isFolderWritable(ROOT.DS.'tmp'))
     exit(json_encode(array('status'=>'err','reason'=>'Temp directory not writable')));
 
-$hash = sanatizeString(trim($_REQUEST['hash']))?sanatizeString(trim($_REQUEST['hash'])):false;
+$hash = sanatizeString(trim($_REQUEST['hash'] ?? ''))?sanatizeString(trim($_REQUEST['hash'] ?? '')):false;
 
-$url = trim($_REQUEST['url']);
+$url = trim($_REQUEST['url'] ?? '');
 
 if(!$url || !startsWith($url, 'http'))
     exit(json_encode(array('status'=>'err','reason'=>'Invalid URL')));

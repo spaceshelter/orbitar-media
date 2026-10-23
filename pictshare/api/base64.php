@@ -21,13 +21,13 @@ if(!isFolderWritable(ROOT.DS.'data'))
 else if(!isFolderWritable(ROOT.DS.'tmp'))
     exit(json_encode(array('status'=>'err','reason'=>'Temp directory not writable')));
 
-$hash = sanatizeString(trim($_REQUEST['hash']))?sanatizeString(trim($_REQUEST['hash'])):false;
+$hash = sanatizeString(trim($_REQUEST['hash'] ?? ''))?sanatizeString(trim($_REQUEST['hash'] ?? '')):false;
 
 // check for POSTed text
-if($_REQUEST['base64'])
+if(!empty($_REQUEST['base64']))
 {
     $data = $_REQUEST['base64'];
-    $format = $_REQUEST['format'];
+    $format = $_REQUEST['format'] ?? '';
 
     $tmpfile = ROOT.DS.'tmp'.DS.md5(rand(0,10000).time()).time();
 

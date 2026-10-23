@@ -11,7 +11,7 @@
 class ImageController implements ContentController
 {
     //returns all extensions registered by this type of content
-    public function getRegisteredExtensions(){return array('png','bmp','gif','jpg','jpeg','x-png','webp');}
+    public function getRegisteredExtensions(){return array('png','gif','jpg','jpeg','x-png','webp');} // no bmp: never stored, and there is no code to serve it
 
     public function handleUpload($tmpfile,$hash=false)
     {
@@ -107,6 +107,8 @@ class ImageController implements ContentController
         include_once(dirname(__FILE__).DS.'filters.php');
         include_once(dirname(__FILE__).DS.'conversion.php');
 
+        $modifiers = array();
+
         //don't do this if it's a gif because PHP can't handle animated gifs
         if($type!='gif')
         {
@@ -124,7 +126,7 @@ class ImageController implements ContentController
                         if(startsWith($u,$filter) && ($u==$filter || startsWith($u,$filter.'_')))
                         {
                             $a = explode('_',$u);
-                            $value = $a[1];
+                            $value = $a[1] ?? null;
                             if(is_numeric($value))
                                 $modifiers['filters'][] = array('filter'=>$filter,'value'=>$value);
                             else
@@ -136,7 +138,7 @@ class ImageController implements ContentController
 
             if(in_array('webp',$url) && $type!='webp')
                 $modifiers['webp'] = true;
-            if(in_array('forcesize',$url) && $modifiers['size'])
+            if(in_array('forcesize',$url) && !empty($modifiers['size']))
                 $modifiers['forcesize'] = true;
         }
         else //gif
@@ -153,11 +155,22 @@ class ImageController implements ContentController
             //we get one nice little hash for every eventuality
             $modhash = md5(http_build_query($modifiers,'',','));
             $newpath = ROOT.DS.'data'.DS.$hash.DS.$modhash.'_'.$hash;
-            $im = $this->getObjOfImage($path);
             $f = new Filter();
 
             if(!file_exists($newpath))
             {
+                // decode only on a cache miss; gif->mp4 works on the file, not on a GD image
+                if(empty($modifiers['mp4']))
+                {
+                    $im = $this->getObjOfImage($path);
+                    if($im === false)
+                    {
+                        header('HTTP/1.1 500 Internal Server Error');
+                        header('Cache-Control: no-store');
+                        die('could not decode image');
+                    }
+                }
+
                 foreach($modifiers as $mod => $val)
                 {
                     switch($mod)
@@ -166,13 +179,13 @@ class ImageController implements ContentController
                             foreach($val as $fd)
                             {
                                 $filter = $fd['filter'];
-                                $value = $fd['value'];
+                                $value = $fd['value'] ?? null;
                                 $im = $f->$filter($im,$value);
                             }
                         break;
 
                         case 'size':
-                            ($modifiers['forcesize']?forceResize($im,$val):resize($im,$val));
+                            (!empty($modifiers['forcesize'])?forceResize($im,$val):resize($im,$val));
                         break;
 
                         case 'rotation':
@@ -278,7 +291,16 @@ class ImageController implements ContentController
 
     function getObjOfImage($path)
     {
-        return imagecreatefromstring(file_get_contents($path));
+        // straight from the file: imagecreatefromstring(file_get_contents()) holds the encoded bytes twice
+        // on PHP 8 (string + GD's copy), which pushed large PNGs (48 MB, 6000x4000) over the memory limit
+        switch(exif_imagetype($path))
+        {
+            case IMAGETYPE_JPEG: return imagecreatefromjpeg($path);
+            case IMAGETYPE_PNG: return imagecreatefrompng($path);
+            case IMAGETYPE_WEBP: return imagecreatefromwebp($path);
+            case IMAGETYPE_GIF: return imagecreatefromgif($path);
+            default: return false;
+        }
     }
 
     /**
@@ -298,10 +320,10 @@ class ImageController implements ContentController
             $tmp = $vc->tempNameFor($target);
             $cmd = "$bin -y -nostdin -loglevel error -f gif -i ".escapeshellarg($gifpath)
                  ." -an -c:v libx264 -preset medium -crf 23 -profile:v high -pix_fmt yuv420p"
-                 ." -vf ".escapeshellarg('scale=trunc(iw/2)*2:trunc(ih/2)*2')." -movflags +faststart -f mp4 ".escapeshellarg($tmp).' 2>&1';
+                 ." -vf ".escapeshellarg('scale=trunc(iw/2)*2:trunc(ih/2)*2')." -movflags +faststart -f mp4 ".escapeshellarg($tmp);
             $output = array();
             $rc = 0;
-            exec($cmd, $output, $rc);
+            exec(VideoController::limited($cmd, 600).' 2>&1', $output, $rc);
             if($rc !== 0 || !is_file($tmp) || filesize($tmp) === 0 || !rename($tmp, $target))
             {
                 error_log("pictshare: gif->mp4 failed (rc=$rc) for $gifpath :: ".implode(' | ', array_slice($output, -3)));
@@ -316,22 +338,41 @@ class ImageController implements ContentController
         }
     }
 
+    /**
+     * Encodes a variant to a temp name and renames it into place. Writing straight to $path let a
+     * concurrent request for the same variant (e.g. /right/ and /left/right/ share one) read a
+     * half-written file, and a fatal (memory limit) halfway through left a truncated one; either
+     * way file_exists() then served it, and the CDN cached it, for a year.
+     */
     function saveObjOfImage($im,$path,$type)
     {
+        $tmp = (new VideoController())->tempNameFor($path);
+        // runs after a fatal error too
+        register_shutdown_function(function() use ($tmp) { if(is_file($tmp)) @unlink($tmp); });
+
+        $ok = false;
         switch($type)
         {
             case 'jpeg':
             case 'jpg':
-                imagejpeg($im,$path,(defined('JPEG_COMPRESSION')?JPEG_COMPRESSION:90));
+                $ok = imagejpeg($im,$tmp,(defined('JPEG_COMPRESSION')?JPEG_COMPRESSION:90));
             break;
 
             case 'png':
-                imagepng($im,$path,(defined('PNG_COMPRESSION')?PNG_COMPRESSION:6));
+                $ok = imagepng($im,$tmp,(defined('PNG_COMPRESSION')?PNG_COMPRESSION:6));
             break;
 
             case 'webp':
-                imagewebp($im,$path,(defined('WEBP_COMPRESSION')?WEBP_COMPRESSION:80));
+                $ok = imagewebp($im,$tmp,(defined('WEBP_COMPRESSION')?WEBP_COMPRESSION:80));
             break;
+        }
+
+        if(!$ok || !is_file($tmp) || filesize($tmp) === 0 || !rename($tmp, $path))
+        {
+            @unlink($tmp);
+            header('HTTP/1.1 500 Internal Server Error');
+            header('Cache-Control: no-store');
+            die('could not encode image');
         }
 
         return $im;

@@ -5,15 +5,15 @@
 _maxUploadSize() {
     echo "[i] Setting uploadsize to ${MAX_UPLOAD_SIZE}M"
 
-	sed -i "/post_max_size/c\post_max_size=${MAX_UPLOAD_SIZE}M" /etc/php7/php.ini
-	sed -i "/upload_max_filesize/c\upload_max_filesize=${MAX_UPLOAD_SIZE}M" /etc/php7/php.ini
+	sed -i "/post_max_size/c\post_max_size=${MAX_UPLOAD_SIZE}M" /etc/php84/php.ini
+	sed -i "/upload_max_filesize/c\upload_max_filesize=${MAX_UPLOAD_SIZE}M" /etc/php84/php.ini
 
 	sed -i -e "s/50M/${MAX_UPLOAD_SIZE}M/g" /etc/nginx/http.d/default.conf
 
     MAX_RAM=${PHP_MEMORY_LIMIT:-$((MAX_UPLOAD_SIZE + 30))}
     echo "[i] Setting PHP memory limit to ${MAX_RAM}M"
-    sed -i -e "s/128M/${MAX_RAM}M/g" /etc/php7/php.ini
-	sed -i "/memory_limit/c\memory_limit=${MAX_RAM}M" /etc/php7/php.ini
+    sed -i -e "s/128M/${MAX_RAM}M/g" /etc/php84/php.ini
+	sed -i "/memory_limit/c\memory_limit=${MAX_RAM}M" /etc/php84/php.ini
 }
 
 _filePermissions() {
@@ -68,7 +68,7 @@ if [[ ${MAX_UPLOAD_SIZE:=100} =~ ^[0-9]+$ ]]; then
 fi
 
 echo ' [+] Starting php'
-php-fpm7
+php-fpm84
 
 chown -R nginx:nginx /var/www/
 

@@ -1,0 +1,17 @@
+{
+    "description": "AWS SDK for the S3 storage controller; installed by the Dockerfile (composer install), vendor/ is not committed",
+    "require": {
+        "php": ">=8.4",
+        "aws/aws-sdk-php": "3.399.2"
+    },
+    "scripts": {
+        "pre-autoload-dump": "Aws\\Script\\Composer\\Composer::removeUnusedServices"
+    },
+    "extra": {
+        "aws/aws-sdk-php": ["S3"]
+    },
+    "config": {
+        "platform": {"php": "8.4.27"},
+        "optimize-autoloader": true
+    }
+}

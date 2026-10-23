@@ -19,7 +19,7 @@ function callVimeoApi($hash) {
 
 function handleVimeoRequest($hash) {
     $vimeoData = callVimeoApi($hash);
-    $vimeo = reset($vimeoData);
+    $vimeo = is_array($vimeoData) ? reset($vimeoData) : null;
     if (isset($vimeo) && isset($vimeo['thumbnail_large'])) {
         header("Location: {$vimeo['thumbnail_large']}");
         exit();

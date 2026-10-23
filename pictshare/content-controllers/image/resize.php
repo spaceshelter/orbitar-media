@@ -58,13 +58,13 @@ function rotate(&$im,$direction)
         //if the new width is greater than the actual width of the image, then the height is too large and the rest cut off, or vice versa
         if($width_new > $width){
             //cut point by height
-            $h_point = (($height - $height_new) / 2);
+            $h_point = (int)(($height - $height_new) / 2);
             //copy image
-            imagecopyresampled($dst_img, $src_img, 0, 0, 0, $h_point, $maxwidth, $maxheight, $width, $height_new);
+            imagecopyresampled($dst_img, $src_img, 0, 0, 0, $h_point, $maxwidth, $maxheight, $width, (int)$height_new);
         }else{
             //cut point by width
-            $w_point = (($width - $width_new) / 2);
-            imagecopyresampled($dst_img, $src_img, 0, 0, $w_point, 0, $maxwidth, $maxheight, $width_new, $height);
+            $w_point = (int)(($width - $width_new) / 2);
+            imagecopyresampled($dst_img, $src_img, 0, 0, $w_point, 0, $maxwidth, $maxheight, (int)$width_new, $height);
         }
         
         $img = $dst_img;
@@ -92,13 +92,13 @@ function rotate(&$im,$direction)
         {   
             $ratio = $maxheight / $height;  
             $newheight = $maxheight;
-            $newwidth = $width * $ratio; 
+            $newwidth = max(1, (int)($width * $ratio)); 
         }
         else 
         {
             $ratio = $maxwidth / $width;   
             $newwidth = $maxwidth;  
-            $newheight = $height * $ratio;   
+            $newheight = max(1, (int)($height * $ratio));   
         }
         
         $newimg = imagecreatetruecolor($newwidth,$newheight); 

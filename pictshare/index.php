@@ -14,5 +14,5 @@ loadAllContentControllers();
 
 
 //send the URL to the architect. It'll know what to do
-$url = $_GET['url']?$_GET['url']:ltrim($_SERVER['REQUEST_URI'],'/');
+$url = !empty($_GET['url'])?$_GET['url']:ltrim($_SERVER['REQUEST_URI'],'/');
 architect($url);

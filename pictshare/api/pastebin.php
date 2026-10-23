@@ -24,7 +24,7 @@ else if(!isFolderWritable(ROOT.DS.'tmp'))
     exit(json_encode(array('status'=>'err','reason'=>'Temp directory not writable')));
 
 // check for POSTed text
-if($_REQUEST['api_paste_code'])
+if(!empty($_REQUEST['api_paste_code']))
 {
     $hash = getNewHash('txt',$length=10);
     $tmpfile = ROOT.DS.'tmp'.DS.$hash;
