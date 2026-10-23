@@ -88,7 +88,8 @@ docker compose --profile mediaserver up -d mediaserver    # next to pictshare, r
 uploads a synthetic corpus to both and compares every URL shape: status, content type, cache headers, image size
 and pixels (RMSE), ffprobe of the stored videos, Range responses, and the API answers. A second step checks that Go,
 started on an empty data directory, restores PictShare's uploads from S3 byte for byte, and that read-only mode leaves
-PictShare's data directory untouched. It never talks to a real bucket.
+PictShare's data directory untouched. It never talks to a real bucket. `difftest/replay.py` is the production counterpart: it replays an access log
+against two running services (cutover step 1).
 
 ```bash
 export DIFF_WORK=$(mktemp -d) PHP_IMAGE=orbitar-media-pictshare GO_IMAGE=orbitar-mediaserver
@@ -107,11 +108,48 @@ rotation of a 3000x5000 one hitting PHP's memory limit), plus the intended ones 
 
 ## Cutover
 
-1. Run `mediaserver` next to `pictshare` read-only (the compose profile's default) behind a second Caddy route,
-   e.g. a `go.{$SERVER_DOMAIN}` site with `reverse_proxy http://mediaserver:80` and the same Client-ID rule. Replay a
-   day of production GETs against both and diff. Keep this step short: the overlay (S3 restores, variants) lives in
-   the container and is not seen by the cleanup service.
-2. Set `MEDIASERVER_READ_ONLY=0` and switch Caddy's GET traffic to `mediaserver`, keeping `/api/*` on `pictshare`; a
+1. **Shadow, read-only, about a day.** `mediaserver` runs next to `pictshare` on the compose network. Users only reach
+   it with `?backend=go` (below), and `difftest/replay.py` sends the GETs from pictshare's access log to both. Compose
+   caps it at 1 CPU and 1 GB (`MEDIASERVER_CPUS`, `MEDIASERVER_MEM_LIMIT`) with one video and one image handler
+   (`MEDIASERVER_VIDEO_HANDLERS`, `MEDIASERVER_IMAGE_HANDLERS`), so it can't starve PictShare. Set these on the
+   command line (`sudo MEDIASERVER_CPUS=1.5 docker compose ...`), not in `.env`: the deploy refuses a `.env` whose keys
+   differ from `.env.sample`. On the server, after a deploy that includes this directory:
+
+   ```bash
+   cd /orbitar_media
+   sudo docker compose --profile mediaserver up -d mediaserver
+   sudo docker compose logs mediaserver | head -3   # "read-only true, s3 true"
+   # pictshare's access log starts at its last restart (the deploy); a day of it is kept in ~/pictshare-logs/
+   sudo docker exec orbitar_media-pictshare-1 cat /var/log/nginx/pictshare/access.log > ~/access.log
+   mkdir -p ~/replay && sudo docker run --rm --network orbitar_media_default \
+     -v /orbitar_media/mediaserver/difftest:/r:ro -v ~/access.log:/access.log:ro -v ~/replay:/out \
+     python:3.13-alpine python3 -I /r/replay.py /access.log --a http://pictshare --b http://mediaserver \
+     --ranges 50 --out /out/diff.jsonl
+   sudo docker stats --no-stream; sudo docker exec orbitar_media-mediaserver-1 du -sh /tmp/mediaserver
+   # done:
+   sudo docker compose stop mediaserver && sudo docker compose rm -f mediaserver
+   ```
+
+   The replay goes at 5 requests per second per side (`--rate`) and never sends delete URLs. Requests to pictshare
+   behave like visitors' requests (a missing variant gets generated). `mediaserver` writes nothing to the volume;
+   S3 restores and its own variants go to scratch space in the container (`/tmp/mediaserver`), which is not seen
+   by the cleanup service and is dropped with the container, so keep this step short. A deploy leaves a running
+   `mediaserver` alone (on its old image): stop it when done. Expected differences: `type-only` for `/<n>/webp/`
+   variants of PNG/JPEG (PictShare labels the WebP bytes `image/png`), `same-size` for `sepia` (dropped), `body` for
+   the HTML pages of videos and gif->mp4 (other template), and the inputs PictShare fails on (500 there).
+   `--ranges` also sends what Bunny (5 MB chunks) and browsers send for a video: chunks, open and suffix ranges, an
+   unsatisfiable one, If-Range / If-None-Match / If-Modified-Since with pictshare's validators. Every check should be
+   `identical`, `validators` included, since both read the same files.
+
+   **`?backend=go`**: Caddy sends any request carrying it to `mediaserver` (answers are tagged `X-Backend: go`, 502
+   while it isn't running), e.g. `https://orbitar.media/<hash>.mp4?backend=go` in a browser. It's a query parameter
+   because Bunny keys its cache on the query string, ignores request headers and strips cookies, so a header would
+   either never reach the origin or put Go's answer in the cache under the plain URL. Bunny keeps these answers for a
+   year: add a cache-buster (`&v=2`) to see a fresh one, or use `origin.orbitar.media`. Uploads
+   (`/api/upload.php?backend=go`) need the `Client-ID` header and `MEDIASERVER_READ_ONLY=0` (otherwise "Uploads are
+   disabled"); writable means real files in the volume and real copies in the S3 bucket, served by PictShare
+   afterwards like its own.
+2. Start it with `MEDIASERVER_READ_ONLY=0` and switch Caddy's GET traffic to `mediaserver`, keeping `/api/*` on `pictshare`; a
    week. Both services may now write the volume: variants have the same names and are renamed into place, `sha1.csv`
    is appended under `flock` by both, and uploads still only reach PictShare.
 3. Route `/api/*` to `mediaserver` as well. Optionally set `MEDIASERVER_TOUCH_ON_ACCESS_MINUTES` (e.g. 60) for

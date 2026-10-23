@@ -53,7 +53,11 @@ services:
       CLIENT_ID: ${CLIENT_ID}
       CONTENTCONTROLLERS: "IMAGE,VIDEO"
       MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-50}
-      MAX_CONCURRENT_VIDEO_HANDLERS: ${MAX_CONCURRENT_VIDEO_HANDLERS:-4}
+      # its own, smaller limits while it runs next to pictshare on the same box (2 cores,
+      # 4 GB). Override MEDIASERVER_* on the command line, not in .env: the deploy refuses a
+      # .env whose keys differ from .env.sample
+      MAX_CONCURRENT_VIDEO_HANDLERS: ${MEDIASERVER_VIDEO_HANDLERS:-1}
+      MAX_CONCURRENT_IMAGE_HANDLERS: ${MEDIASERVER_IMAGE_HANDLERS:-1}
       FFMPEG_MEMORY_LIMIT_MB: ${FFMPEG_MEMORY_LIMIT_MB:-2560}
       S3_BUCKET: ${S3_BUCKET}
       S3_REGION: ${S3_REGION}
@@ -62,6 +66,8 @@ services:
       COUB_PROXY_URL: ${COUB_PROXY_URL:-}
       READ_ONLY: ${MEDIASERVER_READ_ONLY:-1}
       TOUCH_ON_ACCESS_MINUTES: ${MEDIASERVER_TOUCH_ON_ACCESS_MINUTES:-0}
+    mem_limit: ${MEDIASERVER_MEM_LIMIT:-1g}
+    cpus: ${MEDIASERVER_CPUS:-1}
     volumes:
       - pictshare_data:/var/www/data
 

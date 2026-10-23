@@ -190,6 +190,13 @@ so the default `docker compose up` (and the prod deploy) doesn't start it.
   need vips/ffmpeg/file, which the test stage installs).
 - `mediaserver/difftest/` compares it against the PHP stack with s3mock (never the real bucket; the local `.env`
   points at the production bucket).
+- Shadow run in production (cutover step 1 in `mediaserver/README.md`): `--profile mediaserver`, read-only, capped at
+  1 CPU / 1 GB; `mediaserver/difftest/replay.py` replays pictshare's access log against both (`--ranges N` adds the
+  Range / conditional checks on videos). `MEDIASERVER_*` overrides go on the command line, never into the prod `.env`
+  (the deploy checks its keys against `.env.sample`).
+- `?backend=go` on any URL (GET or `/api/*`) is sent to `mediaserver` by Caddy, tagged `X-Backend: go`; 502 while it
+  isn't running. A query parameter, not a header or cookie, because Bunny keys its cache on the query string but
+  ignores headers and strips cookies. Bunny keeps those answers for a year, so add a cache-buster (`&v=2`) when retesting.
 
 ## Environment Variables
 

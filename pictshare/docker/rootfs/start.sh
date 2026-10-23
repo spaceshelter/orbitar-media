@@ -16,8 +16,19 @@ _maxUploadSize() {
 	sed -i "/memory_limit/c\memory_limit=${MAX_RAM}M" /etc/php84/php.ini
 }
 
+# Everything but data/ is small: chown it before serving. data/ holds ~100k hash directories and
+# a recursive chown rewrites every inode (ctime) even when the owner is already right, which kept
+# the origin down for ~90 s per start. php-fpm writes as nginx anyway, so only entries created by
+# root (tools run via docker exec) need fixing: find those after nginx is up, at low priority.
 _filePermissions() {
-    chown -R nginx:nginx /var/www
+    find /var/www -path /var/www/data -prune -o -exec chown -h nginx:nginx {} +
+    chown nginx:nginx /var/www/data
+}
+
+_dataPermissions() {
+    local start=$(date +%s)
+    nice -n 19 find /var/www/data \( ! -user nginx -o ! -group nginx \) -exec chown -h nginx:nginx {} +
+    echo " [i] data/ ownership checked in $(( $(date +%s) - start )) s"
 }
 
 _buildConfig() {
@@ -70,7 +81,7 @@ fi
 echo ' [+] Starting php'
 php-fpm84
 
-chown -R nginx:nginx /var/www/
+_filePermissions
 
 echo ' [+] Creating config'
 
@@ -96,5 +107,7 @@ touch /var/log/nginx/pictshare/reencode.log
 chown nginx:nginx /var/log/nginx/pictshare/reencode.log
 
 nginx
+
+_dataPermissions &
 
 tail -f /var/log/nginx/pictshare/*.log
