@@ -1,0 +1,73 @@
+<!doctype html>
+<html>
+    <head>
+        <title>{{.Title}}</title>
+        <meta http-equiv="content-type" content="text/html;charset=utf-8" />
+        <meta name="copyright" content="Copyright {{fullYear}} PictShare" />
+        <meta id="viewport" name="viewport" content="width=, user-scalable=yes" />
+        <script src="https://code.jquery.com/jquery-2.1.4.min.js"></script>
+
+        <style type="text/css">
+            *{margin:0px;padding:0px;}
+        </style>
+
+        <link rel="canonical"                 href="{{.URL}}{{.Hash}}" />
+
+        <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+
+        <meta property="og:site_name"         content="{{.Title}}" />
+        <meta property="og:url"               content="{{.URL}}{{.Hash}}" />
+        <meta property="og:title"             content="{{.Title}} MP4" />
+        <meta property="og:type"              content="video.other" />
+
+        <meta property="og:image"             content="{{.URL}}preview/{{.Hash}}" />
+        <meta property="og:description"       content="MP4 Video" />
+        <meta property="og:video"             content="{{.URL}}{{.Hash}}" />
+        <meta property="og:video:secure_url"  content="{{.URL}}{{.Hash}}" />
+        <meta property="og:video:type"        content="video/mp4" />
+    </head>
+    <body id="body">
+
+        <div id="container">
+            <video id="video" poster="{{.URL}}{{.Url}}/preview/{{.Hash}}" preload="auto" autoplay="autoplay" controls muted="muted" loop="loop" webkit-playsinline>
+                <source src="{{.URL}}{{.Url}}/raw" type="video/mp4">
+            </video>
+        </div>
+            <small>{{.Filesize}} <a href="{{.URL}}{{.Url}}/raw">Raw</a> <a href="{{.URL}}{{.Url}}/download">Download</a></small>
+
+            <script>
+                var hadToResizeW = false;
+                var hadToResizeH = false;
+                var video = document.getElementById('video');
+                video.addEventListener('click',function(){
+                    video.play();
+                },false);
+                var $video  = $('video'),
+                    $window = $(window);
+                //check video size as soon as the page has finished loading
+                jQuery(window).load(function () {
+                    resizeMe();
+                });
+
+                //if the windows size has changed, check video sizes again
+                $(window).resize(function(){
+                    resizeMe();
+                }).resize();
+                function resizeMe()
+                {
+                    if($window.width() < $video.width() || hadToResizeW===true)
+                    {
+                        hadToResizeW = true;
+                        $video.width($window.width());
+                    }
+
+                    if($window.height() < $video.height() || hadToResizeH===true)
+                    {
+                        hadToResizeH = true;
+                        $video.height($window.height());
+                    }
+                }
+            </script>
+
+    </body>
+</html>

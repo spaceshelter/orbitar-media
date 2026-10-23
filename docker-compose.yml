@@ -40,6 +40,31 @@ services:
     volumes:
       - pictshare_data:/var/www/data
 
+  # Go replacement for pictshare (mediaserver/README.md). Only started with `--profile mediaserver`;
+  # read-only by default, so it can run next to pictshare on the same data volume.
+  mediaserver:
+    profiles: ["mediaserver"]
+    build:
+      context: .
+      dockerfile: mediaserver/Dockerfile
+    restart: unless-stopped
+    environment:
+      HASH_DIMS_AES_KEY: ${HASH_DIMS_AES_KEY}
+      CLIENT_ID: ${CLIENT_ID}
+      CONTENTCONTROLLERS: "IMAGE,VIDEO"
+      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-50}
+      MAX_CONCURRENT_VIDEO_HANDLERS: ${MAX_CONCURRENT_VIDEO_HANDLERS:-4}
+      FFMPEG_MEMORY_LIMIT_MB: ${FFMPEG_MEMORY_LIMIT_MB:-2560}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_REGION: ${S3_REGION}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      COUB_PROXY_URL: ${COUB_PROXY_URL:-}
+      READ_ONLY: ${MEDIASERVER_READ_ONLY:-1}
+      TOUCH_ON_ACCESS_MINUTES: ${MEDIASERVER_TOUCH_ON_ACCESS_MINUTES:-0}
+    volumes:
+      - pictshare_data:/var/www/data
+
   cleanup:
     build:
       context: cleanup-service

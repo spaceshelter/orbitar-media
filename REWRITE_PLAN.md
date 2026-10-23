@@ -1,6 +1,7 @@
 # Plan: replace PictShare (PHP) with a small Go service
 
-Status as of 2026-10-22: plan only, nothing started. The PHP 8.4 upgrade (`PHP_UPGRADE_PLAN.md`) ships first and stays the
+Status as of 2026-10-23: implemented in `mediaserver/` (see its README), differential test against the PHP 8.4 stack
+passing; cutover (below) not started. The PHP 8.4 upgrade (`PHP_UPGRADE_PLAN.md`) is in production and stays the
 fallback until cutover.
 
 ## Why
@@ -38,8 +39,10 @@ same resize/rotation), not 404, so any old embed keeps showing the picture.
 ## Stack
 
 - **Go** (net/http, `http.ServeContent` for Range/If-Range/304/ETag, which replaces `parseByteRange()` and `statETag()`).
-- **libvips** via `govips` (or `bimg`): decode with shrink-on-load, auto-rotate from EXIF, strip metadata, resize,
-  rotate, encode JPEG/PNG/WebP. Animated GIF passes through untouched as today.
+- **libvips** via its CLI (`vips thumbnail`, `rot`, `*save`), not `govips`/`bimg`: no cgo, a static Go binary, and every
+  run gets the same timeout and `ulimit -v` as ffmpeg, so a hostile image can't take the server down. Decode with
+  shrink-on-load, auto-rotate from EXIF, strip metadata, resize, rotate, encode JPEG/PNG/WebP. Animated GIF passes
+  through untouched as today.
 - **ffmpeg/ffprobe** via `exec.CommandContext` with a timeout and `ulimit -v` (or `prlimit`), same caps as today.
   The probe-based normalisation plan in `video.controller.php` (`planNormalization`) ports almost line for line.
 - **aws-sdk-go-v2** for S3.
@@ -98,6 +101,13 @@ resampling, so compare images with a tolerance and spot-check by eye.
    is a Caddy change.
 4. Bunny: nothing to purge if responses stay identical; new ETags only appear for newly generated variants.
 5. Remove PictShare from the repo.
+
+## Decisions taken during the implementation
+
+- `webp`, `forcesize` and gif `/mp4/` are kept (cheap); `base64.php` / `pastebin.php` and the colour filters are dropped.
+- `info.php` is kept as is.
+- Error strings are PictShare's, except an oversized upload, which now gets a JSON "File too big" answer instead of
+  nginx's 413 page.
 
 ## Open questions
 
