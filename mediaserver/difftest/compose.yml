@@ -1,0 +1,56 @@
+# PHP stack (:8443) and Go stack (:8445) side by side, each behind the repo Caddyfile, one s3mock.
+# Never touches real S3.
+services:
+  s3:
+    image: adobe/s3mock:4.4.0
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: media
+    networks: [php, go]
+
+  caddy-php:
+    image: caddy
+    ports: ["8443:443"]
+    environment: {SERVER_DOMAIN: orbitar.media.local, CLIENT_ID: "${CLIENT_ID}"}
+    volumes:
+      - ${REPO}/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${REPO}/caddy/static:/static:ro
+    networks: [php]
+
+  pictshare:
+    image: ${PHP_IMAGE:-orbitar-media-pictshare}
+    environment: &env
+      HASH_DIMS_AES_KEY: "${HASH_DIMS_AES_KEY}"
+      CONTENTCONTROLLERS: "IMAGE,VIDEO"
+      MAX_UPLOAD_SIZE: 50
+      CLIENT_ID: "${CLIENT_ID}"
+      S3_BUCKET: media
+      S3_REGION: eu-central-1
+      S3_ACCESS_KEY: test
+      S3_SECRET_KEY: test
+      S3_ENDPOINT: http://s3:9090
+      COUB_PROXY_URL: "${COUB_PROXY_URL:-}"
+    volumes: ["${DIFF_WORK}/data-php:/var/www/data"]
+    networks: [php]
+
+  caddy-go:
+    image: caddy
+    ports: ["8445:443"]
+    environment: {SERVER_DOMAIN: orbitar.media.local, CLIENT_ID: "${CLIENT_ID}"}
+    volumes:
+      - ${REPO}/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${REPO}/caddy/static:/static:ro
+    networks: [go]
+
+  mediaserver:
+    image: ${GO_IMAGE:-orbitar-mediaserver}
+    environment:
+      <<: *env
+      READ_ONLY: "${GO_READ_ONLY:-}"
+    volumes: ["${DIFF_WORK}/data-${GO_DATA:-go}:/var/www/data"]
+    networks:
+      go:
+        aliases: [pictshare]
+
+networks:
+  php: {}
+  go: {}

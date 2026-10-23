@@ -1,0 +1,8 @@
+# only mediaserver/Dockerfile builds from the repository root
+.git
+.idea
+.claude
+.env
+**/node_modules
+**/vendor
+mediaserver/**/testdata/corpus

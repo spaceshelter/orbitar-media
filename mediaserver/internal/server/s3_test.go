@@ -1,0 +1,148 @@
+package server
+
+import (
+	"bytes"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/spaceshelter/orbitar-media/mediaserver/internal/hashcodec"
+	"github.com/spaceshelter/orbitar-media/mediaserver/internal/imaging"
+	"github.com/spaceshelter/orbitar-media/mediaserver/internal/s3store"
+	"github.com/spaceshelter/orbitar-media/mediaserver/internal/store"
+	"github.com/spaceshelter/orbitar-media/mediaserver/internal/video"
+)
+
+// fakeS3 is a path-style bucket in memory.
+type fakeS3 struct {
+	mu      sync.Mutex
+	objects map[string][]byte
+	gets    int
+}
+
+func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimPrefix(r.URL.Path, "/media/")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch r.Method {
+	case http.MethodPut:
+		b, _ := io.ReadAll(r.Body)
+		f.objects[key] = b
+	case http.MethodGet, http.MethodHead:
+		f.gets++
+		b, ok := f.objects[key]
+		if !ok {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `<?xml version="1.0"?><Error><Code>NoSuchKey</Code></Error>`)
+			return
+		}
+		w.Header().Set("Content-Length", itoa(len(b)))
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(b)
+		}
+	case http.MethodDelete:
+		delete(f.objects, key)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (f *fakeS3) get(key string) ([]byte, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.objects[key]
+	return b, ok
+}
+
+func newS3Server(t *testing.T, data string, fake *fakeS3, endpoint string) *harness {
+	t.Helper()
+	needTools(t, "file", "vips", "ffmpeg", "ffprobe")
+	tmp := t.TempDir()
+	codec, _ := hashcodec.New(testKey)
+	s := New(Config{ClientID: "secret", MaxUploadMB: 5, TmpDir: tmp, UploadImages: true, VideoSlots: 1, ImageSlots: 1},
+		&store.Store{Root: data}, s3store.New(s3store.Config{Bucket: "media", AccessKey: "a", SecretKey: "b", Endpoint: endpoint}),
+		codec, &imaging.Processor{MemoryMB: 1024, Timeout: time.Minute, MaxPixels: 1e8, TmpDir: tmp},
+		&video.Tools{FFmpeg: "ffmpeg", FFprobe: "ffprobe", MemoryMB: 2560})
+	s.logger.SetOutput(io.Discard)
+	s.Start()
+	ts := httptest.NewServer(s)
+	t.Cleanup(func() { ts.Close(); s.Shutdown(t.Context()) })
+	return &harness{t: t, s: s, ts: ts}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for range 100 {
+		if cond() {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func TestS3QueueAndRestore(t *testing.T) {
+	fake := &fakeS3{objects: map[string][]byte{}}
+	s3srv := httptest.NewServer(fake)
+	defer s3srv.Close()
+	data := t.TempDir()
+
+	// a marker left by an earlier run is swept at startup
+	_ = os.MkdirAll(filepath.Join(data, "left.png"), 0o755)
+	_ = os.WriteFile(filepath.Join(data, "left.png", "left.png"), pngBytes(4, 4), 0o644)
+	_ = os.MkdirAll(filepath.Join(data, ".s3-pending"), 0o755)
+	_ = os.WriteFile(filepath.Join(data, ".s3-pending", "left.png"), nil, 0o644)
+
+	h := newS3Server(t, data, fake, s3srv.URL)
+	waitFor(t, "startup sweep", func() bool { _, ok := fake.get("left.png"); return ok })
+
+	src := pngBytes(30, 30)
+	hash := h.upload("a.png", src)["hash"].(string)
+	waitFor(t, "upload to S3", func() bool { b, ok := fake.get(hash); return ok && bytes.Equal(b, src) })
+	waitFor(t, "marker removal", func() bool {
+		entries, _ := os.ReadDir(filepath.Join(data, ".s3-pending"))
+		return len(entries) == 0
+	})
+
+	// a second instance with an empty data dir restores from S3 on a miss
+	h2 := newS3Server(t, t.TempDir(), fake, s3srv.URL)
+	if r := h2.get("/" + hash); r.code != 200 || !bytes.Equal(r.body, src) {
+		t.Fatalf("restore: %d", r.code)
+	}
+	if r := h2.get("/10/" + hash); r.code != 200 {
+		t.Errorf("variant of a restored file: %d", r.code)
+	}
+
+	// names this service can't have produced never reach S3; misses are remembered
+	before := fake.gets
+	for _, p := range []string{"/../etc/passwd", "/x.php", "/2BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.jpg", "/" + strings.Repeat("a", 80) + ".jpg"} {
+		if r := h2.get(p); r.code != 404 {
+			t.Errorf("%s: %d", p, r.code)
+		}
+	}
+	if fake.gets != before {
+		t.Errorf("invalid names were looked up in S3 (%d requests)", fake.gets-before)
+	}
+	h2.get("/abcdefgh.jpg")
+	n := fake.gets
+	h2.get("/abcdefgh.jpg")
+	if fake.gets != n {
+		t.Error("S3 miss not cached")
+	}
+
+	// delete removes the S3 copy too
+	up := h.upload("b.png", pngBytes(31, 31))
+	waitFor(t, "second upload", func() bool { _, ok := fake.get(up["hash"].(string)); return ok })
+	if r := h.get("/delete_" + up["delete_code"].(string) + "/" + up["hash"].(string)); r.code != 200 {
+		t.Fatalf("delete: %d", r.code)
+	}
+	if _, ok := fake.get(up["hash"].(string)); ok {
+		t.Error("S3 copy survived the delete")
+	}
+}

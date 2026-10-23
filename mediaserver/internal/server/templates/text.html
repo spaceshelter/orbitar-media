@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html class="no-js">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>{{.Title}}</title>
+
+        <link href="/css/bootstrap.min.css" rel="stylesheet">
+        <link href="/css/pictshare.css" rel="stylesheet">
+
+        <meta name="robots" content="index, follow">
+        <link rel="stylesheet" href="/js/styles/rainbow.css">
+    </head>
+    <body>
+
+        <div class="container" id="headcontainer">
+
+                    <a href="/"><img src="/css/imgs/logo/horizontal3.png" /></a>
+                    <h4></h4>
+                    <div class="well">
+                            <a class="btn btn-primary" href="/raw/{{.Hash}}">Raw</a>
+                            <a class="btn btn-primary" href="/download/{{.Hash}}">Download</a>
+                    <pre><code>{{.Content}}</code></pre>
+
+            </div>
+
+            <footer>(c){{year}} by<br/><a href="https://haschek.solutions" target="_blank"><img height="30" src="/css/imgs/hs_logo.png" /></a></footer>
+        </div>
+
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.12.4/jquery.min.js"></script>
+        <script src="/js/bootstrap.min.js"></script>
+
+        <script src="/js/highlight.pack.js"></script>
+        <script>hljs.initHighlightingOnLoad();</script>
+    </body>
+</html>

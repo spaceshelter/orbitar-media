@@ -180,6 +180,17 @@ progressive, even dimensions, AAC or MP3 audio, one video + at most one audio st
   removes that window for stream-copy cases; genuine background transcodes still need a Bunny purge of
   `/<hash>.mp4/raw` when they finish (not implemented, needs the Bunny API key).
 
+## Go rewrite (`mediaserver/`)
+
+A Go replacement for PictShare lives in `mediaserver/` (README there; plan in `REWRITE_PLAN.md`). Same URLs, data
+layout and S3 keys. Not deployed: the compose service sits behind `--profile mediaserver` and is read-only by default,
+so the default `docker compose up` (and the prod deploy) doesn't start it.
+
+- Build/test from the repo root: `docker build -f mediaserver/Dockerfile --target test .` (local Go is too old; tests
+  need vips/ffmpeg/file, which the test stage installs).
+- `mediaserver/difftest/` compares it against the PHP stack with s3mock (never the real bucket; the local `.env`
+  points at the production bucket).
+
 ## Environment Variables
 
 Key variables in `.env` (see `.env.sample`):
