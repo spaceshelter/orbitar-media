@@ -59,7 +59,9 @@ Also in this change:
 4. Rollback: re-deploy the previous commit (the data directory and S3 layout are unchanged).
 
 Tuning: on a small host, consider `MAX_CONCURRENT_VIDEO_HANDLERS=2` (each transcode is capped by
-`FFMPEG_MEMORY_LIMIT_MB`, the sum is bounded by the number of slots).
+`FFMPEG_MEMORY_LIMIT_MB`, the sum is bounded by the number of slots). Both are forwarded by `docker-compose.yml`; because
+the deploy workflow compares the uncommented keys of `.env.sample` and the host's `.env`, uncomment the key in
+`.env.sample` and add it to the host's `.env` together.
 
 ## Running the smoke test
 

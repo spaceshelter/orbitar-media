@@ -363,6 +363,9 @@ class ImageController implements ContentController
             break;
 
             case 'webp':
+                // libgd's WebP encoder rejects palette images ("Palette image not supported by webp")
+                if(!imageistruecolor($im))
+                    imagepalettetotruecolor($im);
                 $ok = imagewebp($im,$tmp,(defined('WEBP_COMPRESSION')?WEBP_COMPRESSION:80));
             break;
         }
