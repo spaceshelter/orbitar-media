@@ -1,0 +1,27 @@
+# Routing shared by Caddyfile (standalone, own TLS) and Caddyfile.colocated (behind another Caddy).
+route {
+    # serve static files if they exist
+    file_server * {
+        root /static/
+        index index.html
+        pass_thru
+    }
+
+    # disallow all POST requests that dont have valid auth
+    @hasAuth {
+        not header authorization "Client-ID {$CLIENT_ID}"
+        path /api/*
+    }
+    respond @hasAuth 403
+
+    # ?backend=go sends the request to the Go mediaserver instead (testing; 502 while it
+    # isn't running). A query parameter because Bunny keys its cache on the query string, so
+    # these answers never land under the plain URL; it ignores headers and strips cookies.
+    @goBackend query backend=go
+    reverse_proxy @goBackend http://mediaserver:80 {
+        header_down X-Backend go
+    }
+
+    # fallback to pictshare
+    reverse_proxy http://pictshare:80
+}

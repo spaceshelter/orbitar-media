@@ -12,6 +12,7 @@ services:
       CLIENT_ID: ${CLIENT_ID}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/media.caddy:/etc/caddy/media.caddy:ro
       - ./caddy/static:/static:ro
       - caddy_data:/data
       - caddy_config:/config

@@ -1,0 +1,13 @@
+# Used by docker-compose.colocated.yml: another Caddy on the same box (e.g. Orbitar's) owns 80/443,
+# terminates TLS for the media hostnames and forwards plain HTTP here. Any Host is accepted, so
+# <domain>, b.<domain> and origin.<domain> (which Orbitar derives from MEDIA_HOSTING_URL) all work.
+{
+    servers {
+        # the front Caddy reaches us from a Docker bridge address; keep the visitor's IP
+        trusted_proxies static private_ranges
+    }
+}
+
+:80 {
+    import media.caddy
+}
