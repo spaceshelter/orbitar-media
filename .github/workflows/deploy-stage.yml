@@ -13,6 +13,8 @@ jobs:
     concurrency: media-stage
     env:
       CONFIG_DIR: /opt/deployment-specific-files-media
+      # beats .env and anything the runner inherits; the copy in .env is for manual commands
+      COMPOSE_FILE: docker-compose.yml:docker-compose.colocated.yml
     steps:
       - name: Checkout
         uses: actions/checkout@v7
