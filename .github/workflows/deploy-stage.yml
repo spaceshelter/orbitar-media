@@ -43,6 +43,11 @@ jobs:
           # leading newline: a .env made from .env.sample has none at the end
           printf '\nCOMPOSE_FILE=%s\nCOMPOSE_PROJECT_NAME=%s\n' "$COMPOSE_FILE" "$COMPOSE_PROJECT_NAME" >> .env
 
+      - name: Verify backend
+        run: |
+          docker compose config caddy | grep -qE '^ +BACKEND: (php|go)$' ||
+            (echo "BACKEND in .env must be php or go" && exit 1)
+
       - name: Build
         run: docker compose build
 

@@ -23,6 +23,11 @@ jobs:
         run: |
           cp -f /opt/deployment-specific-files/.env ./
 
+      - name: Verify backend
+        run: |
+          docker compose config caddy | grep -qE '^ +BACKEND: (php|go)$' ||
+            (echo "BACKEND in .env must be php or go" && exit 1)
+
       - name: Build
         run: docker compose build
 
