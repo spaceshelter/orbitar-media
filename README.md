@@ -15,7 +15,7 @@ based on the (patched) [Pictshare](https://github.com/HaschekSolutions/pictshare
 
 ## Next to Orbitar on one box
 
-Orbitar's Caddy already owns ports 80/443, so the media stack runs behind it
+Orbitar's Caddy already owns port 443, so the media stack runs behind it
 (`docker-compose.colocated.yml`, needs docker compose 2.24+):
 
 ```bash
@@ -24,7 +24,9 @@ docker compose -f docker-compose.yml -f docker-compose.colocated.yml up -d
 
 Its Caddy then listens for plain HTTP on the Docker bridge only, `172.17.0.1:8090` (override with
 `MEDIA_HTTP_BIND`). Orbitar derives `b.<domain>` and `origin.<domain>` from `MEDIA_HOSTING_URL`, so point all three
-names at the box and add a site to Orbitar's Caddy, which gets the certificates:
+names at the box and add a site to Orbitar's Caddy, which gets the certificates. Orbitar imports extra sites from
+`caddy/sites/*.caddy` (its `caddy/sites/README.md`; the deploy copies them from
+`/opt/deployment-specific-files/caddy-sites/` on the host):
 
 ```
 media.example.org, b.media.example.org, origin.media.example.org {
