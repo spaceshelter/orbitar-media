@@ -114,12 +114,8 @@ func (p *Processor) NormalizeJPEG(ctx context.Context, in, out string) error {
 			return err
 		}
 	}
-	mid := filepath.Join(tmpDir, "rotated.v")
-	if r := p.run(ctx, "vips", "thumbnail", src, mid, "10000000", "--height", "10000000",
-		"--size", "down", "--export-profile", "srgb"); r.Err != nil {
-		return fmt.Errorf("vips thumbnail: %v: %s", r.Err, r.Stderr)
-	}
-	return p.save(ctx, mid, out, "jpg")
+	return p.encode(ctx, out, "jpg", []string{"thumbnail", src, "", "10000000", "--height", "10000000",
+		"--size", "down", "--export-profile", "srgb"})
 }
 
 // untaggedCMYK: a CMYK JPEG without an ICC profile. vips would convert it through a press
@@ -155,21 +151,28 @@ func (p *Processor) naiveCMYKToRGB(ctx context.Context, in, dir string) (string,
 	return f("rgb.v"), nil
 }
 
-// save encodes in to out in the format PictShare used for typ (out's name doesn't matter).
-func (p *Processor) save(ctx context.Context, in, out, typ string) error {
-	var args []string
+// encode runs the vips operations in steps one after the other; the last one writes out, encoded
+// in the format PictShare used for typ (out's name doesn't matter). Each step's output is its
+// third argument, which encode fills in for the last one: vips picks the encoder from the file
+// extension and takes its options in brackets, so that step writes <out>.<ext> (same directory,
+// hence the same filesystem as out) and encode renames it. One process fewer than a separate save.
+func (p *Processor) encode(ctx context.Context, out, typ string, steps ...[]string) error {
+	ext, opts := "jpg", "Q=90,keep=none,subsample-mode=on" // what GD's imagejpeg(…, 90) wrote, 4:2:0 included
 	switch typ {
 	case "webp":
-		args = []string{"webpsave", in, out, "--Q", "80", "--keep", "none"}
+		ext, opts = "webp", "Q=80,keep=none"
 	case "png", "x-png":
-		args = []string{"pngsave", in, out, "--compression", "6", "--keep", "none"}
-	default: // jpg, jpeg: what GD's imagejpeg(…, 90) wrote, 4:2:0 included
-		args = []string{"jpegsave", in, out, "--Q", "90", "--keep", "none", "--subsample-mode", "on"}
+		ext, opts = "png", "compression=6,keep=none"
 	}
-	if r := p.run(ctx, "vips", args...); r.Err != nil {
-		return fmt.Errorf("vips %s: %v: %s", args[0], r.Err, r.Stderr)
+	final := out + "." + ext
+	defer os.Remove(final) // after a failed step or rename
+	steps[len(steps)-1][2] = final + "[" + opts + "]"
+	for _, args := range steps {
+		if r := p.run(ctx, "vips", args...); r.Err != nil {
+			return fmt.Errorf("vips %s: %v: %s", args[0], r.Err, r.Stderr)
+		}
 	}
-	return nil
+	return os.Rename(final, out)
 }
 
 // Size is a requested bounding box ("300" means 300x300).
@@ -246,6 +249,7 @@ func (p *Processor) Variant(ctx context.Context, src, out, typ string, m Modifie
 	}
 	defer os.RemoveAll(tmpDir)
 
+	var steps [][]string
 	cur := src
 	for i, op := range m.Ops {
 		next := filepath.Join(tmpDir, fmt.Sprintf("s%d.v", i))
@@ -273,13 +277,11 @@ func (p *Processor) Variant(ctx context.Context, src, out, typ string, m Modifie
 		default:
 			continue
 		}
-		if r := p.run(ctx, "vips", args...); r.Err != nil {
-			return fmt.Errorf("vips %s: %v: %s", args[0], r.Err, r.Stderr)
-		}
-		if cur != src {
-			os.Remove(cur)
-		}
+		steps = append(steps, args)
 		cur = next
 	}
-	return p.save(ctx, cur, out, typ)
+	if len(steps) == 0 { // only a format change (webp)
+		steps = [][]string{{"copy", src, ""}}
+	}
+	return p.encode(ctx, out, typ, steps...)
 }
