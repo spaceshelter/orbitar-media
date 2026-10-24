@@ -1,3 +1,5 @@
-http://{$SERVER_DOMAIN}, {$SERVER_DOMAIN}, origin.{$SERVER_DOMAIN}, mp4.{$SERVER_DOMAIN} {
+# Exactly the one name in SERVER_DOMAIN (production: origin.orbitar.media; the public names point at the CDN).
+# Plain HTTP too, without the redirect to HTTPS: the CDN pulls from http://origin.orbitar.media.
+http://{$SERVER_DOMAIN}, {$SERVER_DOMAIN} {
     import media.caddy
 }
