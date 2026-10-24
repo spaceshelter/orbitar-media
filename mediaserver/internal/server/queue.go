@@ -142,6 +142,8 @@ func (q *uploadQueue) run() {
 			continue
 		}
 
+		_, merr := os.Stat(filepath.Join(q.dir, hash))
+		hadMarker := merr == nil // no marker (writeMarker failed): its absence afterwards proves nothing
 		err := q.upload(hash)
 		q.mu.Lock()
 		deleted := q.inflightDeleted
@@ -150,7 +152,7 @@ func (q *uploadQueue) run() {
 		case err == nil || os.IsNotExist(err):
 			if os.IsNotExist(err) {
 				log.Printf("s3: %s is gone locally, dropping it from the queue", hash)
-			} else if q.deletedElsewhere(hash) {
+			} else if hadMarker && q.deletedElsewhere(hash) {
 				deleted = true
 			}
 			delete(backoff, hash)
@@ -179,7 +181,8 @@ func (q *uploadQueue) run() {
 }
 
 // deletedElsewhere reports a delete by PictShare, which shares the data directory: it removes
-// the hash directory and the marker but can't flag the upload in flight.
+// the hash directory and the marker but can't flag the upload in flight. Only meaningful when the
+// marker existed before the upload (the cleanup service never touches markers).
 func (q *uploadQueue) deletedElsewhere(hash string) bool {
 	_, merr := os.Stat(filepath.Join(q.dir, hash))
 	_, ferr := os.Stat(q.s.store.Path(hash))
