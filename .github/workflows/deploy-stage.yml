@@ -1,0 +1,63 @@
+name: Staging deployment
+
+# Media staging next to Orbitar staging on the same box (README, "Next to Orbitar on one box").
+# Orbitar's Caddy owns 80/443 there and proxies stage.orbitar.media (and b. / origin.) to this stack.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deployment:
+    runs-on: [self-hosted, stage]
+    environment: MediaStaging
+    concurrency: media-stage
+    env:
+      CONFIG_DIR: /opt/deployment-specific-files-media
+      # beat .env and anything the runner inherits (e.g. a project name that would hit Orbitar's stack);
+      # the copies in .env are for manual commands
+      COMPOSE_FILE: docker-compose.yml:docker-compose.colocated.yml
+      COMPOSE_PROJECT_NAME: orbitar_media
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify environment
+        run: |
+          (diff -wB <(grep -vE '^\s*#' $CONFIG_DIR/.env | cut -d '=' -f 1 | sort) \
+          <(grep -vE '^\s*#' .env.sample | cut -d '=' -f 1 | sort)) ||\
+          (echo "Environment variables mismatch" &&\
+          echo "Update $CONFIG_DIR/.env on the host or .env.sample in your branch" &&\
+          exit 1)
+
+      # docker-compose.colocated.yml uses !override (2.24.4+); an older compose would ignore it and
+      # try to bind 80/443, which Orbitar's Caddy holds
+      - name: Verify docker compose version
+        run: |
+          v=$(docker compose version --short)
+          printf '%s\n' 2.24.4 "$v" | sort -VC || (echo "docker compose $v is too old, need 2.24.4+" && exit 1)
+
+      - name: Copy configuration
+        run: |
+          cp -f $CONFIG_DIR/.env ./
+          # every compose command in /orbitar_media, including manual ones, uses the colocated setup
+          # leading newline: a .env made from .env.sample has none at the end
+          printf '\nCOMPOSE_FILE=%s\nCOMPOSE_PROJECT_NAME=%s\n' "$COMPOSE_FILE" "$COMPOSE_PROJECT_NAME" >> .env
+
+      - name: Build
+        run: docker compose build
+
+      - name: Copy everything to /orbitar_media
+        run: |
+          mkdir -p /orbitar_media
+
+          # Include dot files in *
+          shopt -s dotglob
+
+          rm -rf /orbitar_media/*
+          cp -r ./* /orbitar_media
+
+          shopt -u dotglob
+
+      - name: Deploy
+        working-directory: /orbitar_media
+        run: docker compose up -d --build --force-recreate

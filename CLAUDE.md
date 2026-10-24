@@ -218,6 +218,10 @@ Key variables in `.env` (see `.env.sample`):
 
 - **build.yml:** Validates docker-compose.yml and builds images on push/PR to main
 - **deploy-prod.yml:** Production deployment workflow
+- **deploy-stage.yml:** Staging (`stage.orbitar.media`) on Orbitar's staging box, behind Orbitar's Caddy
+  (`docker-compose.colocated.yml`, README "Next to Orbitar on one box"). Runner label `stage`, environment
+  `MediaStaging`, `.env` from `/opt/deployment-specific-files-media/` (bucket `orbitar-media-stage`, never the prod one).
+- Caddy routing lives in `caddy/media.caddy`, imported by `Caddyfile` (prod, own TLS) and `Caddyfile.colocated`.
 
 ## API Quick Reference
 

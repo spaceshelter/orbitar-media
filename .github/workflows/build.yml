@@ -13,7 +13,16 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Validate docker-compose.yml
-        run: docker compose config
+        run: |
+          docker compose config -q
+          docker compose -f docker-compose.yml -f docker-compose.colocated.yml config -q
+
+      - name: Validate Caddyfiles
+        run: |
+          for f in Caddyfile Caddyfile.colocated; do
+            docker run --rm -e SERVER_DOMAIN=example.org -e CLIENT_ID=x -v $PWD/caddy:/etc/caddy:ro caddy:2.10.2 \
+              caddy validate --config /etc/caddy/$f --adapter caddyfile
+          done
 
       - name: Build backend & frontend
         run: docker compose build

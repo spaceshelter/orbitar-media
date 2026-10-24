@@ -1,0 +1,13 @@
+# Run next to another Caddy that owns ports 80/443 on the same box, e.g. Orbitar:
+#   docker compose -f docker-compose.yml -f docker-compose.colocated.yml up -d
+# The media Caddy then serves plain HTTP on the Docker bridge only (not on the public interface),
+# and the front Caddy proxies the media hostnames to it (README, "Next to Orbitar on one box").
+services:
+  caddy:
+    # pinned here (the base file's untagged `caddy` is whatever the box last pulled);
+    # Caddyfile.colocated needs >= 2.7 for trusted_proxies
+    image: caddy:2.10.2
+    ports: !override
+      - "${MEDIA_HTTP_BIND:-172.17.0.1:8090}:80"
+    volumes:
+      - ./caddy/Caddyfile.colocated:/etc/caddy/Caddyfile:ro
