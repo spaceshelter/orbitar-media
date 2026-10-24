@@ -110,15 +110,20 @@ rotation of a 3000x5000 one hitting PHP's memory limit), plus the intended ones 
 
 Both `mediaserver` and `pictshare` always run, writable, on the same volume and S3 bucket; `BACKEND` in `.env`
 (`php` or `go`) picks the one Caddy sends traffic to. Variants have the same names and are renamed into place and
-`sha1.csv` is appended under `flock` by both, so either can serve what the other wrote. Switching is editing `.env`
-(the host's `/opt/deployment-specific-files*/.env` plus a deploy, or `/orbitar_media/.env` and
-`sudo docker compose up -d`, which recreates only Caddy); rollback is the same with `php`. The idle one keeps
-running, so `mediaserver`'s background S3 copies and transcodes finish after a switch back.
+`sha1.csv` is appended under `flock` by both, so either can serve what the other wrote. Switching is editing `.env`:
+`/orbitar_media/.env` and `sudo docker compose up -d`, which recreates only Caddy, and the host's
+`/opt/deployment-specific-files*/.env` so the next deploy keeps it. Rollback is the same with `php`; the idle service
+keeps running, so `mediaserver`'s background S3 copies and transcodes finish. A deploy instead recreates every
+container and cuts running transcodes short in either service, so prefer the `up -d` route for a rollback.
 
-1. **Compare** while on `php`. `difftest/replay.py` sends the GETs from pictshare's access log to both:
+1. **Compare** while on `php`. `difftest/replay.py` sends the GETs from pictshare's access log to both. Make
+   `mediaserver` read-only for it (its variants then go to scratch space in the container instead of the shared
+   volume, where PictShare would serve them instead of rendering its own):
 
    ```bash
    cd /orbitar_media
+   sudo MEDIASERVER_READ_ONLY=1 docker compose up -d mediaserver
+   sudo docker compose logs mediaserver | tail -1   # "read-only true, s3 true"
    # pictshare's access log starts at its last restart (the deploy); a day of it is kept in ~/pictshare-logs/
    sudo docker exec orbitar_media-pictshare-1 cat /var/log/nginx/pictshare/access.log > ~/access.log
    mkdir -p ~/replay && sudo docker run --rm --network orbitar_media_default \
@@ -126,6 +131,7 @@ running, so `mediaserver`'s background S3 copies and transcodes finish after a s
      python:3.13-alpine python3 -I /r/replay.py /access.log --a http://pictshare --b http://mediaserver \
      --ranges 50 --out /out/diff.jsonl
    sudo docker stats --no-stream
+   sudo docker compose up -d mediaserver           # writable again
    ```
 
    The replay goes at 5 requests per second per side (`--rate`) and never sends delete URLs. Both sides behave like
@@ -141,10 +147,12 @@ running, so `mediaserver`'s background S3 copies and transcodes finish after a s
    because Bunny keys its cache on the query string, ignores request headers and strips cookies, so a header would
    either never reach the origin or put Go's answer in the cache under the plain URL. Bunny keeps these answers for a
    year: add a cache-buster (`&v=2`) to see a fresh one, or use `origin.orbitar.media`. Uploads
-   (`/api/upload.php?backend=go`) need the `Client-ID` header and land in the volume and the S3 bucket for real.
+   (`/api/upload.php?backend=go`) need the `Client-ID` header and, while `mediaserver` is writable, land in the
+   volume and the S3 bucket for real.
 2. **Staging:** `BACKEND=go` in the staging host's `.env`, then deploy.
 3. **Production:** the same. Optionally `MEDIASERVER_TOUCH_ON_ACCESS_MINUTES` (e.g. 60, on the command line) for
    last-use eviction. After a rollback, Bunny still holds what it cached from `mediaserver` for URLs where the two
    differ on purpose (e.g. `sepia`): purge those.
-4. Bunny, on the way to Go: nothing to purge; existing files keep their bytes, new ETags only appear for newly generated variants.
+4. Bunny, on the way to Go: existing files keep their bytes, new ETags only appear for newly generated variants. URLs
+   where the two differ on purpose (e.g. `sepia`) keep PictShare's cached answer until purged.
 5. Remove PictShare from the repository.

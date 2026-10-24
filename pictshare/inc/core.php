@@ -715,6 +715,8 @@ function deleteHash($hash)
 
     //delete all files in directory
     rrmdir(ROOT.DS.'data'.DS.$hash);
+    //and mediaserver's pending S3 copy (a hard link, see mediaserver/internal/server/queue.go), so it can't re-upload it
+    @unlink(ROOT.DS.'data'.DS.'.s3-pending'.DS.$hash);
 
     //tell every storage controller to delete theirs as well
     $sc = getStorageControllers();
