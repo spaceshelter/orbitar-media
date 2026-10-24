@@ -13,8 +13,10 @@ jobs:
     concurrency: media-stage
     env:
       CONFIG_DIR: /opt/deployment-specific-files-media
-      # beats .env and anything the runner inherits; the copy in .env is for manual commands
+      # beat .env and anything the runner inherits (e.g. a project name that would hit Orbitar's stack);
+      # the copies in .env are for manual commands
       COMPOSE_FILE: docker-compose.yml:docker-compose.colocated.yml
+      COMPOSE_PROJECT_NAME: orbitar_media
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -39,7 +41,7 @@ jobs:
           cp -f $CONFIG_DIR/.env ./
           # every compose command in /orbitar_media, including manual ones, uses the colocated setup
           # leading newline: a .env made from .env.sample has none at the end
-          printf '\nCOMPOSE_FILE=docker-compose.yml:docker-compose.colocated.yml\n' >> .env
+          printf '\nCOMPOSE_FILE=%s\nCOMPOSE_PROJECT_NAME=%s\n' "$COMPOSE_FILE" "$COMPOSE_PROJECT_NAME" >> .env
 
       - name: Build
         run: docker compose build
