@@ -38,6 +38,9 @@ Then set Orbitar's `MEDIA_HOSTING_URL=https://media.example.org` and `MEDIA_HOST
 `CLIENT_ID`. S3 is optional (empty `S3_BUCKET` = local disk only; the cleanup service then deletes files for good when
 the disk runs low, see `REQUIRED_SPACE`).
 
+`BACKEND` in `.env` picks the server that gets the traffic: `php` (PictShare, default) or `go` (the rewrite in
+`mediaserver/`). Both always run; after changing it, `docker compose up -d` recreates only Caddy.
+
 Staging (`stage.orbitar.media` on Orbitar's staging box) is deployed this way by `.github/workflows/deploy-stage.yml`,
 with its `.env` in `/opt/deployment-specific-files-media/` and its own bucket. The runner can't create top-level
 directories, so `/orbitar_media` (owned by the runner user) and `DATA_DIR` are created once by root.

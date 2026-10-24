@@ -79,7 +79,7 @@ The container runs as uid 100 / gid 101, the `nginx` user of the PictShare image
 # from the repository root
 docker build -f mediaserver/Dockerfile --target test .   # go vet + unit and HTTP tests with real vips/ffmpeg
 docker build -f mediaserver/Dockerfile -t orbitar-mediaserver .
-docker compose --profile mediaserver up -d mediaserver    # next to pictshare, read-only by default
+docker compose up -d                                     # next to pictshare; BACKEND in .env picks who serves
 ```
 
 ### Differential test against PictShare
@@ -108,52 +108,51 @@ rotation of a 3000x5000 one hitting PHP's memory limit), plus the intended ones 
 
 ## Cutover
 
-1. **Shadow, read-only, about a day.** `mediaserver` runs next to `pictshare` on the compose network. Users only reach
-   it with `?backend=go` (below), and `difftest/replay.py` sends the GETs from pictshare's access log to both. Compose
-   caps it at 1 CPU and 1 GB (`MEDIASERVER_CPUS`, `MEDIASERVER_MEM_LIMIT`) with one video and one image handler
-   (`MEDIASERVER_VIDEO_HANDLERS`, `MEDIASERVER_IMAGE_HANDLERS`), so it can't starve PictShare. Set these on the
-   command line (`sudo MEDIASERVER_CPUS=1.5 docker compose ...`), not in `.env`: the deploy refuses a `.env` whose keys
-   differ from `.env.sample`. On the server, after a deploy that includes this directory:
+Both `mediaserver` and `pictshare` always run, writable, on the same volume and S3 bucket; `BACKEND` in `.env`
+(`php` or `go`) picks the one Caddy sends traffic to. Variants have the same names and are renamed into place and
+`sha1.csv` is appended under `flock` by both, so either can serve what the other wrote. Switching is editing `.env`:
+`/orbitar_media/.env` and `sudo docker compose up -d`, which recreates only Caddy, and the host's
+`/opt/deployment-specific-files*/.env` so the next deploy keeps it. Rollback is the same with `php`; the idle service
+keeps running, so `mediaserver`'s background S3 copies and transcodes finish. A deploy instead recreates every
+container and cuts running transcodes short in either service, so prefer the `up -d` route for a rollback.
+
+1. **Compare** while on `php`. `difftest/replay.py` sends the GETs from pictshare's access log to both. Make
+   `mediaserver` read-only for it (its variants then go to scratch space in the container instead of the shared
+   volume, where PictShare would serve them instead of rendering its own):
 
    ```bash
    cd /orbitar_media
-   sudo docker compose --profile mediaserver up -d mediaserver
-   sudo docker compose logs mediaserver | head -3   # "read-only true, s3 true"
+   sudo MEDIASERVER_READ_ONLY=1 docker compose up -d mediaserver
+   sudo docker compose logs mediaserver | tail -1   # "read-only true, s3 true"
    # pictshare's access log starts at its last restart (the deploy); a day of it is kept in ~/pictshare-logs/
    sudo docker exec orbitar_media-pictshare-1 cat /var/log/nginx/pictshare/access.log > ~/access.log
    mkdir -p ~/replay && sudo docker run --rm --network orbitar_media_default \
      -v /orbitar_media/mediaserver/difftest:/r:ro -v ~/access.log:/access.log:ro -v ~/replay:/out \
      python:3.13-alpine python3 -I /r/replay.py /access.log --a http://pictshare --b http://mediaserver \
      --ranges 50 --out /out/diff.jsonl
-   sudo docker stats --no-stream; sudo docker exec orbitar_media-mediaserver-1 du -sh /tmp/mediaserver
-   # done:
-   sudo docker compose stop mediaserver && sudo docker compose rm -f mediaserver
+   sudo docker stats --no-stream
+   sudo docker compose up -d mediaserver           # writable again
    ```
 
-   The replay goes at 5 requests per second per side (`--rate`) and never sends delete URLs. Requests to pictshare
-   behave like visitors' requests (a missing variant gets generated). `mediaserver` writes nothing to the volume;
-   S3 restores and its own variants go to scratch space in the container (`/tmp/mediaserver`), which is not seen
-   by the cleanup service and is dropped with the container, so keep this step short. A deploy leaves a running
-   `mediaserver` alone (on its old image): stop it when done. Expected differences: `type-only` for `/<n>/webp/`
+   The replay goes at 5 requests per second per side (`--rate`) and never sends delete URLs. Both sides behave like
+   visitors' requests (a missing variant gets generated). Expected differences: `type-only` for `/<n>/webp/`
    variants of PNG/JPEG (PictShare labels the WebP bytes `image/png`), `same-size` for `sepia` (dropped), `body` for
    the HTML pages of videos and gif->mp4 (other template), and the inputs PictShare fails on (500 there).
    `--ranges` also sends what Bunny (5 MB chunks) and browsers send for a video: chunks, open and suffix ranges, an
    unsatisfiable one, If-Range / If-None-Match / If-Modified-Since with pictshare's validators. Every check should be
    `identical`, `validators` included, since both read the same files.
 
-   **`?backend=go`**: Caddy sends any request carrying it to `mediaserver` (answers are tagged `X-Backend: go`, 502
-   while it isn't running), e.g. `https://orbitar.media/<hash>.mp4?backend=go` in a browser. It's a query parameter
+   **`?backend=go`**: Caddy sends any request carrying it to `mediaserver` (answers are tagged `X-Backend: go`)
+   whatever `BACKEND` says, e.g. `https://orbitar.media/<hash>.mp4?backend=go` in a browser. It's a query parameter
    because Bunny keys its cache on the query string, ignores request headers and strips cookies, so a header would
    either never reach the origin or put Go's answer in the cache under the plain URL. Bunny keeps these answers for a
    year: add a cache-buster (`&v=2`) to see a fresh one, or use `origin.orbitar.media`. Uploads
-   (`/api/upload.php?backend=go`) need the `Client-ID` header and `MEDIASERVER_READ_ONLY=0` (otherwise "Uploads are
-   disabled"); writable means real files in the volume and real copies in the S3 bucket, served by PictShare
-   afterwards like its own.
-2. Start it with `MEDIASERVER_READ_ONLY=0` and switch Caddy's GET traffic to `mediaserver`, keeping `/api/*` on `pictshare`; a
-   week. Both services may now write the volume: variants have the same names and are renamed into place, `sha1.csv`
-   is appended under `flock` by both, and uploads still only reach PictShare.
-3. Route `/api/*` to `mediaserver` as well. Optionally set `MEDIASERVER_TOUCH_ON_ACCESS_MINUTES` (e.g. 60) for
-   last-use eviction. Keep the PictShare image for rollback: data and S3 layout are unchanged, so rollback is a Caddy
-   change.
-4. Bunny: nothing to purge; existing files keep their bytes, new ETags only appear for newly generated variants.
+   (`/api/upload.php?backend=go`) need the `Client-ID` header and, while `mediaserver` is writable, land in the
+   volume and the S3 bucket for real.
+2. **Staging:** `BACKEND=go` in the staging host's `.env`, then deploy.
+3. **Production:** the same. Optionally `MEDIASERVER_TOUCH_ON_ACCESS_MINUTES` (e.g. 60, on the command line) for
+   last-use eviction. After a rollback, Bunny still holds what it cached from `mediaserver` for URLs where the two
+   differ on purpose (e.g. `sepia`): purge those.
+4. Bunny, on the way to Go: existing files keep their bytes, new ETags only appear for newly generated variants. URLs
+   where the two differ on purpose (e.g. `sepia`) keep PictShare's cached answer until purged.
 5. Remove PictShare from the repository.

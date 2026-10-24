@@ -10,6 +10,7 @@ services:
     environment:
       SERVER_DOMAIN: ${SERVER_DOMAIN}
       CLIENT_ID: ${CLIENT_ID}
+      BACKEND: ${BACKEND:-php}  # php or go: the service (network alias) that gets the traffic, see media.caddy
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/media.caddy:/etc/caddy/media.caddy:ro
@@ -18,6 +19,7 @@ services:
       - caddy_config:/config
     depends_on:
       - pictshare
+      - mediaserver
     # Default caddy command borrowed from https://github.com/caddyserver/caddy-docker/blob/master/Dockerfile.tmpl
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--watch"]
 
@@ -40,11 +42,13 @@ services:
       COUB_PROXY_URL: ${COUB_PROXY_URL:-}
     volumes:
       - pictshare_data:/var/www/data
+    networks:
+      default:
+        aliases: [php]
 
-  # Go replacement for pictshare (mediaserver/README.md). Only started with `--profile mediaserver`;
-  # read-only by default, so it can run next to pictshare on the same data volume.
+  # Go replacement for pictshare (mediaserver/README.md). Both always run on the same data volume;
+  # BACKEND in .env picks the one Caddy sends traffic to, the other one idles.
   mediaserver:
-    profiles: ["mediaserver"]
     build:
       context: .
       dockerfile: mediaserver/Dockerfile
@@ -54,23 +58,23 @@ services:
       CLIENT_ID: ${CLIENT_ID}
       CONTENTCONTROLLERS: "IMAGE,VIDEO"
       MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-50}
-      # its own, smaller limits while it runs next to pictshare on the same box (2 cores,
-      # 4 GB). Override MEDIASERVER_* on the command line, not in .env: the deploy refuses a
+      # MEDIASERVER_* overrides go on the command line, not in .env: the deploy refuses a
       # .env whose keys differ from .env.sample
-      MAX_CONCURRENT_VIDEO_HANDLERS: ${MEDIASERVER_VIDEO_HANDLERS:-1}
-      MAX_CONCURRENT_IMAGE_HANDLERS: ${MEDIASERVER_IMAGE_HANDLERS:-1}
+      MAX_CONCURRENT_VIDEO_HANDLERS: ${MAX_CONCURRENT_VIDEO_HANDLERS:-4}
+      MAX_CONCURRENT_IMAGE_HANDLERS: ${MEDIASERVER_IMAGE_HANDLERS:-2}
       FFMPEG_MEMORY_LIMIT_MB: ${FFMPEG_MEMORY_LIMIT_MB:-2560}
       S3_BUCKET: ${S3_BUCKET}
       S3_REGION: ${S3_REGION}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY}
       COUB_PROXY_URL: ${COUB_PROXY_URL:-}
-      READ_ONLY: ${MEDIASERVER_READ_ONLY:-1}
+      READ_ONLY: ${MEDIASERVER_READ_ONLY:-0}
       TOUCH_ON_ACCESS_MINUTES: ${MEDIASERVER_TOUCH_ON_ACCESS_MINUTES:-0}
-    mem_limit: ${MEDIASERVER_MEM_LIMIT:-1g}
-    cpus: ${MEDIASERVER_CPUS:-1}
     volumes:
       - pictshare_data:/var/www/data
+    networks:
+      default:
+        aliases: [go]
 
   cleanup:
     build:
