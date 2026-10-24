@@ -25,18 +25,19 @@ jobs:
           echo "Update $CONFIG_DIR/.env on the host or .env.sample in your branch" &&\
           exit 1)
 
-      # docker-compose.colocated.yml uses !override (2.24+); an older compose would ignore it and
+      # docker-compose.colocated.yml uses !override (2.24.4+); an older compose would ignore it and
       # try to bind 80/443, which Orbitar's Caddy holds
       - name: Verify docker compose version
         run: |
           v=$(docker compose version --short)
-          printf '%s\n' 2.24.0 "$v" | sort -VC || (echo "docker compose $v is too old, need 2.24+" && exit 1)
+          printf '%s\n' 2.24.4 "$v" | sort -VC || (echo "docker compose $v is too old, need 2.24.4+" && exit 1)
 
       - name: Copy configuration
         run: |
           cp -f $CONFIG_DIR/.env ./
           # every compose command in /orbitar_media, including manual ones, uses the colocated setup
-          echo "COMPOSE_FILE=docker-compose.yml:docker-compose.colocated.yml" >> .env
+          # leading newline: a .env made from .env.sample has none at the end
+          printf '\nCOMPOSE_FILE=docker-compose.yml:docker-compose.colocated.yml\n' >> .env
 
       - name: Build
         run: docker compose build

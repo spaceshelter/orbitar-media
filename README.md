@@ -16,7 +16,7 @@ based on the (patched) [Pictshare](https://github.com/HaschekSolutions/pictshare
 ## Next to Orbitar on one box
 
 Orbitar's Caddy already owns port 443, so the media stack runs behind it
-(`docker-compose.colocated.yml`, needs docker compose 2.24+):
+(`docker-compose.colocated.yml`, needs docker compose 2.24.4+):
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.colocated.yml up -d
