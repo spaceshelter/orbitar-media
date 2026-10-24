@@ -24,11 +24,16 @@ type fakeS3 struct {
 	mu      sync.Mutex
 	objects map[string][]byte
 	gets    int
-	down    bool // every request fails
+	deletes int
+	down    bool             // every request fails
+	putHook func(key string) // runs before a PUT is stored, outside the lock
 }
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/media/")
+	if r.Method == http.MethodPut && f.putHook != nil {
+		f.putHook(key)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.down {
@@ -53,6 +58,7 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write(b)
 		}
 	case http.MethodDelete:
+		f.deletes++
 		delete(f.objects, key)
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -180,6 +186,30 @@ func TestS3PendingSurvivesEviction(t *testing.T) {
 	newS3Server(t, data, fake, s3srv.URL)
 	waitFor(t, "upload from the marker", func() bool { b, ok := fake.get(hash); return ok && bytes.Equal(b, src) })
 	waitFor(t, "marker removal", func() bool { _, err := os.Stat(marker); return os.IsNotExist(err) })
+}
+
+// PictShare (same data directory) deleting a file while its S3 copy is in flight: it removes the
+// directory and the marker; the copy that lands afterwards is deleted again.
+func TestS3DeletedByPictShareInFlight(t *testing.T) {
+	fake := &fakeS3{objects: map[string][]byte{}}
+	s3srv := httptest.NewServer(fake)
+	defer s3srv.Close()
+	data := t.TempDir()
+	var once sync.Once
+	fake.putHook = func(key string) {
+		once.Do(func() { // what PictShare's deleteHash does
+			os.RemoveAll(filepath.Join(data, key))
+			os.Remove(filepath.Join(data, ".s3-pending", key))
+		})
+	}
+	h := newS3Server(t, data, fake, s3srv.URL)
+	hash := h.upload("a.png", pngBytes(19, 21))["hash"].(string)
+	waitFor(t, "the deleted copy to go", func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		_, ok := fake.objects[hash]
+		return fake.deletes == 1 && !ok
+	})
 }
 
 // Custom names are restored too (rate limited, unlike dimension hashes).
