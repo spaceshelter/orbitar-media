@@ -204,7 +204,7 @@ Key variables in `.env` (see `.env.sample`):
 
 | Variable | Purpose |
 |----------|---------|
-| `SERVER_DOMAIN` | Domain for the service |
+| `SERVER_DOMAIN` | The one hostname Caddy serves, HTTPS and plain HTTP (prod: `origin.orbitar.media`, which Bunny pulls from) |
 | `CLIENT_ID` | Auth header value for POST requests |
 | `DATA_DIR` | Host path for persistent data volume |
 | `HASH_DIMS_AES_KEY` | AES key for encoding dimensions in hash |
