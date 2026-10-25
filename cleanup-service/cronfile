@@ -1,1 +1,1 @@
-*/15 * * * * (echo "=== $(date) ===" && /usr/local/bin/cleanup.sh) >> /var/log/cron.log 2>&1
+*/5 * * * * (echo "=== $(date) ===" && flock -n /tmp/cleanup.lock /usr/local/bin/cleanup.sh) >> /var/log/cron.log 2>&1

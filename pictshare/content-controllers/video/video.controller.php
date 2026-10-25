@@ -1,7 +1,7 @@
 <?php
 
 define('MAX_CONCURRENT_VIDEO_HANDLERS',
-    getenv('MAX_CONCURRENT_VIDEO_HANDLERS') !== false ? (int) getenv('MAX_CONCURRENT_VIDEO_HANDLERS') : 4
+    getenv('MAX_CONCURRENT_VIDEO_HANDLERS') !== false ? (int) getenv('MAX_CONCURRENT_VIDEO_HANDLERS') : 2
 );
 // Address-space cap per ffmpeg/ffprobe process. A 4K x264 transcode peaks at ~1.9 GB virtual / 1.5 GB resident.
 define('FFMPEG_MEMORY_LIMIT_MB',

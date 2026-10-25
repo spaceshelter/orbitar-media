@@ -92,7 +92,7 @@ Docker containers orchestrated via docker-compose.yml (plus `mediaserver`, the G
                           │
 ┌─────────────────────────▼───────────────────────────────────┐
 │  Cleanup Service (cron microservice)                        │
-│  - Runs every 15 minutes to free disk space                 │
+│  - Runs every 5 minutes to free disk space                  │
 │  - Evicts oldest files by mtime (FIFO) when low on space    │
 └─────────────────────────────────────────────────────────────┘
 ```
