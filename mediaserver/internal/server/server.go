@@ -65,8 +65,10 @@ type Server struct {
 	textSlots    chan struct{} // text pages rendered in memory
 	restoreSlots chan struct{} // S3 downloads
 
+	previewPuts chan previewPut // previews on their way to S3
+
 	restoreMu  sync.Mutex
-	restoring  map[string]*sync.WaitGroup
+	restoring  map[string]*flight
 	misses     *missCache
 	s3Lookups  *rateLimiter
 	generating keyedMutex
@@ -96,7 +98,8 @@ func New(cfg Config, st *store.Store, s3 *s3store.Client, codec *hashcodec.Codec
 		probeSlots:   make(chan struct{}, 2*cfg.VideoSlots),
 		textSlots:    make(chan struct{}, 2),
 		restoreSlots: make(chan struct{}, 8),
-		restoring:    map[string]*sync.WaitGroup{},
+		previewPuts:  make(chan previewPut, 64),
+		restoring:    map[string]*flight{},
 		misses:       newMissCache(20000, 10*time.Minute),
 		s3Lookups:    newRateLimiter(10, 20),
 	}
@@ -105,8 +108,14 @@ func New(cfg Config, st *store.Store, s3 *s3store.Client, codec *hashcodec.Codec
 	return s
 }
 
-// Start launches the background S3 uploader (including files left pending by an earlier run).
-func (s *Server) Start() { s.queue.start() }
+// Start launches the background S3 uploaders (including files left pending by an earlier run).
+func (s *Server) Start() {
+	s.queue.start()
+	if s.queue.enabled() {
+		s.bgWG.Add(1)
+		go s.runPreviewUploads()
+	}
+}
 
 // Shutdown stops background work, waiting up to ctx for running jobs.
 func (s *Server) Shutdown(ctx context.Context) {

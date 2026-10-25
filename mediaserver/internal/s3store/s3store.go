@@ -117,6 +117,23 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 	return err
 }
 
+// DeletePrefix removes every key starting with prefix.
+func (c *Client) DeletePrefix(ctx context.Context, prefix string) error {
+	pages := s3.NewListObjectsV2Paginator(c.c, &s3.ListObjectsV2Input{Bucket: &c.bucket, Prefix: &prefix})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return err
+		}
+		for _, o := range page.Contents {
+			if err := c.Delete(ctx, *o.Key); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func isNotFound(err error) bool {
 	var ae smithy.APIError
 	if errors.As(err, &ae) {

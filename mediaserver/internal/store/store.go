@@ -4,6 +4,8 @@
 //	data/<hash>/<hash>       the original (or normalised) upload
 //	data/<hash>/deletecode   32 chars [0-9a-z]
 //	data/<hash>/<variant>    generated files (resized images, previews, gif->mp4)
+//	data/<hash>.previews/    video previews restored from S3 while the video itself isn't here
+//	                         (a directory of its own: PictShare takes data/<hash>/ for "stored")
 //	data/sha1.csv            "sha1;hash\n" lines, append-only, for dedupe
 package store
 
@@ -111,6 +113,36 @@ func (s *Store) VariantPath(hash, name string) string {
 		return filepath.Join(dir, name)
 	}
 	return filepath.Join(s.Root, hash, name)
+}
+
+// PreviewPath is where a video preview restored from S3 without its video lives. In read-only
+// mode one already in Root is used, new ones go to the overlay.
+func (s *Store) PreviewPath(hash, name string) string {
+	dir := hash + ".previews"
+	if s.ReadOnly {
+		if p := filepath.Join(s.Root, dir, name); isFile(p) {
+			return p
+		}
+		return filepath.Join(s.Overlay, dir, name)
+	}
+	return filepath.Join(s.Root, dir, name)
+}
+
+// PutPreview moves src to PreviewPath(hash, name).
+func (s *Store) PutPreview(src, hash, name string) error {
+	if !ValidName(hash) || strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("invalid preview %q of %q", name, hash)
+	}
+	dst := s.PreviewPath(hash, name)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	tmp := TempName(dst)
+	defer os.Remove(tmp)
+	if err := moveOrCopy(src, tmp); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
 
 // TempName is a per-call temp name next to target (same filesystem, so rename is atomic).
@@ -224,13 +256,16 @@ func (s *Store) DeleteCode(hash string) string {
 	return string(b)
 }
 
-// Delete removes hash and all its variants.
+// Delete removes hash, all its variants and its restored previews.
 func (s *Store) Delete(hash string) error {
 	if s.ReadOnly {
 		return errors.New("read-only")
 	}
 	if !ValidName(hash) {
 		return fmt.Errorf("invalid name %q", hash)
+	}
+	if err := os.RemoveAll(filepath.Join(s.Root, hash+".previews")); err != nil {
+		return err
 	}
 	return os.RemoveAll(filepath.Join(s.Root, hash))
 }

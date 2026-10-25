@@ -144,7 +144,8 @@ progressive, even dimensions, AAC or MP3 audio, one video + at most one audio st
   slot *before* probing, waits at most 600 s, then logs and exits non-zero) and gif->mp4. A pass that can open no slot file
   is logged. `/<width>/` variants of the video itself return 404 (unauthenticated full transcode, nothing links to them), but
   sized previews `/preview/<w>/<hash>.mp4` and `/preview/<w>x<h>/...` (the gallery thumbnails) are served as a scaled
-  first frame rendered from the original, cached as `<w>_<hash>_preview.jpg` (the name the old resize path produced). Capacity is reserved
+  first frame rendered from the original, cached as `<w>_<hash>_preview.jpg` (the name the old resize path produced). `mediaserver` also copies
+  previews to S3 (`previews/<hash>/<name>`) and serves an evicted video's preview from there without restoring the video. Capacity is reserved
   *before* `storeFile()`: a busy upload is rejected with "System is busy" while nothing has been published yet, so there
   is no rollback and no window in which a concurrent identical upload could dedupe onto a file that then disappears.
   Admission for background transcodes probes the same slots (no more `ps aux | grep`). Lock files are chmod 0666; when

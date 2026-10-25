@@ -46,6 +46,11 @@ timeout and `ulimit -v`, so a bad input can only fail its own request.
   cleanup service's `ls` doesn't see), retries with backoff, and a sweep at startup. The marker is a hard link to the
   file, so a copy still pending when the cleanup service evicts the directory is not lost. An S3 outage delays the
   copy, not the upload.
+- **Video previews in S3**: a rendered preview frame is copied to `previews/<hash>/<name>` in the bucket (best effort).
+  A preview URL of a video that isn't stored locally is answered from that copy, kept in `data/<hash>.previews/`
+  (not `data/<hash>/`: PictShare takes that directory as "the video is here"), so a page of old videos doesn't
+  restore every video to render a frame. When S3 has no copy yet, the video is restored and the frame rendered and
+  uploaded as before. Deleting a video removes its previews from S3 too (a delete through PictShare doesn't).
 - **Read-only mode** (`READ_ONLY=1`): never writes to the data directory. Uploads and deletes return 503. Files
   restored from S3 and generated variants go to a scratch overlay, which is cleared at startup. Used to run next to
   PictShare for comparison.
