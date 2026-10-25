@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -44,7 +43,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// the whole request, not only the file part, is bounded in size and time
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxUploadBytes()+1<<20)
 	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(uploadReadTimeout))
-	tmp, custom, err := s.receiveUpload(r)
+	tmp, err := s.receiveUpload(r)
 	if tmp != "" {
 		defer os.Remove(tmp)
 	}
@@ -64,7 +63,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			s.cfg.UploadVideos && slices.Contains(videoExts, typ) ||
 			s.cfg.UploadText && typ == "text"
 	}
-	s.ingest(w, r, tmp, custom, allowed, func(typ any) []kv {
+	s.ingest(w, r, tmp, allowed, func(typ any) []kv {
 		return []kv{{"status", "err"}, {"reason", fmt.Sprintf("Unsupported filetype: %v", phpString(typ))}, {"filetype", typ}}
 	})
 }
@@ -77,17 +76,17 @@ var (
 	errNoFile = errors.New("no file")
 )
 
-// receiveUpload streams the "file" part to a temp file, at most MAX_UPLOAD_SIZE.
-func (s *Server) receiveUpload(r *http.Request) (tmp, custom string, err error) {
+// receiveUpload streams the "file" part to a temp file, at most MAX_UPLOAD_SIZE. Other parts
+// (PictShare's custom name "hash", for one) are ignored.
+func (s *Server) receiveUpload(r *http.Request) (tmp string, err error) {
 	ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if r.Method != http.MethodPost || ct != "multipart/form-data" {
-		return "", "", errNoFile
+		return "", errNoFile
 	}
 	mr, err := r.MultipartReader()
 	if err != nil {
-		return "", "", errNoFile
+		return "", errNoFile
 	}
-	custom = r.URL.Query().Get("hash")
 	for {
 		part, err := mr.NextPart()
 		if err == io.EOF {
@@ -97,27 +96,24 @@ func (s *Server) receiveUpload(r *http.Request) (tmp, custom string, err error) 
 			if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 				err = errTooBig
 			}
-			return tmp, "", err
+			return tmp, err
 		}
 		switch part.FormName() {
-		case "hash":
-			b, _ := io.ReadAll(io.LimitReader(part, 200))
-			custom = string(b)
 		case "file":
 			if tmp != "" {
 				continue
 			}
 			tmp, err = s.saveLimited(part)
 			if err != nil {
-				return tmp, "", err
+				return tmp, err
 			}
 		}
 		part.Close()
 	}
 	if tmp == "" {
-		return "", "", errNoFile
+		return "", errNoFile
 	}
-	return tmp, custom, nil
+	return tmp, nil
 }
 
 // saveLimited copies r to a new temp file; errTooBig past the upload limit.
@@ -141,7 +137,8 @@ func (s *Server) saveLimited(r io.Reader) (string, error) {
 
 // ingest is the part upload.php and geturl.php share: type detection, dedupe, the content
 // controller, then the extra answer fields and the S3 copy.
-func (s *Server) ingest(w http.ResponseWriter, r *http.Request, tmp, custom string, allowed func(string) bool, unsupported func(any) []kv) {
+func (s *Server) ingest(w http.ResponseWriter, r *http.Request, tmp string, allowed func(string) bool, unsupported func(any) []kv) {
+	start := time.Now()
 	typ, typOK := s.fileType(r.Context(), tmp)
 	var typJSON any = typ
 	if !typOK {
@@ -166,11 +163,11 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, tmp, custom stri
 	if typOK && allowed(typ) {
 		switch {
 		case slices.Contains(imageExts, typ):
-			ans = s.uploadImage(r.Context(), tmp, custom)
+			ans = s.uploadImage(r.Context(), tmp)
 		case slices.Contains(videoExts, typ):
-			ans = s.uploadVideo(r.Context(), tmp, custom)
+			ans = s.uploadVideo(r.Context(), tmp)
 		case typ == "text":
-			ans = s.uploadText(tmp, custom)
+			ans = s.put(tmp, s.randomName("txt"))
 		}
 	}
 	if ans == nil {
@@ -190,7 +187,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, tmp, custom stri
 	if code := s.store.DeleteCode(ans.hash); code != "" {
 		fields = append(fields, kv{"delete_code", code}, kv{"delete_url", s.cfg.URL + "delete_" + code + "/" + ans.hash})
 	}
-	s.queue.push(ans.hash)
+	s.queue.push(ans.hash, start)
 	s.writeJSON(w, r, fields...)
 }
 
@@ -239,21 +236,6 @@ func (s *Server) detectType(ctx context.Context, path string) (string, bool) {
 	return sub, true
 }
 
-var customHashRe = regexp.MustCompile(`[^a-zA-Z0-9._\-]+`)
-
-// customName applies upload.php's optional "hash" parameter: sanitised, extension appended.
-// "" when no usable custom name was given.
-func customName(custom, ext string) string {
-	c := customHashRe.ReplaceAllString(strings.TrimSpace(custom), "")
-	if c == "" {
-		return ""
-	}
-	if !strings.HasSuffix(c, "."+ext) {
-		c += "." + ext
-	}
-	return c
-}
-
 // newName picks a fresh name: a dimension hash when a key is configured, else random.
 func (s *Server) newName(ext string, w, h int) (string, error) {
 	if s.codec != nil {
@@ -285,18 +267,8 @@ func dirExists(p string) bool {
 	return err == nil && st.IsDir()
 }
 
-// claim resolves the name for an upload (custom or new) and reports an existing custom one.
-func (s *Server) claim(custom, ext string, w, h int) (string, *answer) {
-	if c := customName(custom, ext); c != "" {
-		if !store.ValidName(c) {
-			return "", &answer{reason: "Invalid hash"}
-		}
-		if s.store.Exists(c) {
-			return "", &answer{hash: c, reason: "Custom hash already exists"}
-		}
-		s.reuseName(c) // of an earlier, evicted file under this name
-		return c, nil
-	}
+// claim picks the name for a new upload.
+func (s *Server) claim(ext string, w, h int) (string, *answer) {
 	name, err := s.newName(ext, w, h)
 	if err != nil {
 		return "", &answer{reason: "Could not create a name"}
@@ -305,10 +277,7 @@ func (s *Server) claim(custom, ext string, w, h int) (string, *answer) {
 }
 
 func (s *Server) put(tmp, name string) *answer {
-	if _, err := s.store.Put(tmp, name); err != nil {
-		if err == store.ErrExists {
-			return &answer{hash: name, reason: "Custom hash already exists"}
-		}
+	if _, err := s.store.Put(tmp, name, ""); err != nil {
 		log.Printf("store %s: %v", name, err)
 		return &answer{reason: "Could not store file"}
 	}
@@ -317,7 +286,7 @@ func (s *Server) put(tmp, name string) *answer {
 
 // uploadImage is ImageController::handleUpload: JPEGs are re-encoded with the EXIF orientation
 // applied and all metadata stripped; PNG, GIF and WebP are stored as they are.
-func (s *Server) uploadImage(ctx context.Context, tmp, custom string) *answer {
+func (s *Server) uploadImage(ctx context.Context, tmp string) *answer {
 	ext := imaging.Sniff(tmp)
 	switch ext {
 	case "gif", "png", "webp":
@@ -338,7 +307,7 @@ func (s *Server) uploadImage(ctx context.Context, tmp, custom string) *answer {
 	if err != nil {
 		return &answer{reason: "Not a valid image"}
 	}
-	name, fail := s.claim(custom, ext, w, h)
+	name, fail := s.claim(ext, w, h)
 	if fail != nil {
 		return fail
 	}
@@ -363,7 +332,7 @@ func (s *Server) withSlot(ctx context.Context, slots chan struct{}, f func() err
 // uploadVideo is VideoController::handleUpload. Container and audio fixes happen before the URL
 // is handed out (stream copy, about as fast as copying the file); a real transcode runs in the
 // background, admitted only while a conversion slot is free.
-func (s *Server) uploadVideo(ctx context.Context, tmp, custom string) *answer {
+func (s *Server) uploadVideo(ctx context.Context, tmp string) *answer {
 	var probe *video.Probe
 	var plan *video.Plan
 	if err := s.withSlot(ctx, s.probeSlots, func() error {
@@ -377,10 +346,10 @@ func (s *Server) uploadVideo(ctx context.Context, tmp, custom string) *answer {
 	if probe != nil {
 		w, h, ok = probe.Dimensions()
 	}
-	if !ok && s.codec != nil && customName(custom, "mp4") == "" {
+	if !ok && s.codec != nil {
 		return &answer{reason: "Can't get video dimensions"}
 	}
-	name, fail := s.claim(custom, "mp4", w, h)
+	name, fail := s.claim("mp4", w, h)
 	if fail != nil {
 		return fail
 	}
@@ -444,23 +413,8 @@ func (s *Server) transcodeInBackground(name string, plan *video.Plan) {
 		if sum, err := store.FileSHA1(path); err == nil {
 			s.store.AddSHA1(name, sum)
 		}
-		s.queue.push(name)
+		s.queue.push(name, start)
 	}()
-}
-
-func (s *Server) uploadText(tmp, custom string) *answer {
-	name := customName(custom, "txt")
-	if name != "" {
-		if !store.ValidName(name) {
-			return &answer{reason: "Invalid hash"}
-		}
-		if s.store.Exists(name) {
-			return &answer{hash: name, reason: "Custom hash already exists"}
-		}
-	} else {
-		name = s.randomName("txt")
-	}
-	return s.put(tmp, name)
 }
 
 // handleGetURL is /api/geturl.php: the server downloads a URL and stores it like an upload.
@@ -493,7 +447,7 @@ func (s *Server) handleGetURL(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, r, kv{"status", "err"}, kv{"reason", "Could not download file"})
 		return
 	}
-	s.ingest(w, r, tmp, r.Form.Get("hash"), func(typ string) bool {
+	s.ingest(w, r, tmp, func(typ string) bool {
 		return slices.Contains(imageExts, typ) || slices.Contains(videoExts, typ) || typ == "text"
 	}, func(typ any) []kv {
 		return []kv{{"status", "err"}, {"reason", "Unsupported filetype"}, {"filetype", typ}}

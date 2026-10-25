@@ -25,7 +25,7 @@ func TestPutLookupDelete(t *testing.T) {
 	s := &Store{Root: t.TempDir()}
 	src := filepath.Join(t.TempDir(), "up")
 	os.WriteFile(src, []byte("hello"), 0o600)
-	code, err := s.Put(src, "abc.txt")
+	code, err := s.Put(src, "abc.txt", "")
 	if err != nil || len(code) != 32 {
 		t.Fatalf("put: %q %v", code, err)
 	}
@@ -41,7 +41,7 @@ func TestPutLookupDelete(t *testing.T) {
 		t.Fatalf("sha1.csv: %q", b)
 	}
 	os.WriteFile(src, []byte("x"), 0o600)
-	if _, err := s.Put(src, "abc.txt"); err != ErrExists {
+	if _, err := s.Put(src, "abc.txt", ""); err != ErrExists {
 		t.Fatalf("second put: %v", err)
 	}
 	if err := s.Delete("abc.txt"); err != nil || s.Exists("abc.txt") {
@@ -50,6 +50,22 @@ func TestPutLookupDelete(t *testing.T) {
 }
 
 // Of several writers racing for one name exactly one wins, and the delete code is the winner's.
+// A restore keeps the file's delete code; a malformed one is replaced.
+func TestPutWithCode(t *testing.T) {
+	s := &Store{Root: t.TempDir()}
+	for name, give := range map[string]string{"a.txt": "0123456789abcdefghijklmnopqrstuv", "b.txt": "../x", "c.txt": "SHORT"} {
+		src := filepath.Join(t.TempDir(), "up")
+		os.WriteFile(src, []byte(name), 0o600)
+		code, err := s.Put(src, name, give)
+		if err != nil || s.DeleteCode(name) != code || len(code) != 32 {
+			t.Fatalf("%s: %q %v", name, code, err)
+		}
+		if (code == give) != (name == "a.txt") {
+			t.Errorf("%s: code %q from %q", name, code, give)
+		}
+	}
+}
+
 func TestPutRace(t *testing.T) {
 	s := &Store{Root: t.TempDir()}
 	srcDir := t.TempDir()
@@ -61,7 +77,7 @@ func TestPutRace(t *testing.T) {
 		for i := range codes {
 			src := filepath.Join(srcDir, fmt.Sprint(round, "-", i))
 			os.WriteFile(src, []byte(fmt.Sprint("content ", i)), 0o600)
-			wg.Go(func() { codes[i], errs[i] = s.Put(src, name) })
+			wg.Go(func() { codes[i], errs[i] = s.Put(src, name, "") })
 		}
 		wg.Wait()
 		winners := 0
@@ -97,7 +113,7 @@ func TestReadOnlyOverlay(t *testing.T) {
 	}
 	src := filepath.Join(t.TempDir(), "up")
 	os.WriteFile(src, []byte("restored"), 0o644)
-	if _, err := s.Put(src, "b.jpg"); err != nil {
+	if _, err := s.Put(src, "b.jpg", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(s.Root, "b.jpg")); err == nil {

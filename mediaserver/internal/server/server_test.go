@@ -353,12 +353,9 @@ func TestUploadErrors(t *testing.T) {
 	if r := h.do(req); !bytes.Contains(r.body, []byte(`"Upload error"`)) {
 		t.Errorf("no file: %s", r.body)
 	}
-	// custom names are validated
-	if up := h.upload("a.png", pngBytes(8, 8), "hash", "mine"); up["status"] != "ok" || up["hash"] != "mine.png" {
-		t.Errorf("custom: %v", up)
-	}
-	if up := h.upload("a.png", pngBytes(9, 9), "hash", "mine"); up["reason"] != "Custom hash already exists" {
-		t.Errorf("custom exists: %v", up)
+	// custom names are not offered: the field is ignored
+	if up := h.upload("a.png", pngBytes(8, 8), "hash", "mine"); up["status"] != "ok" || up["hash"] == "mine.png" {
+		t.Errorf("custom name: %v", up)
 	}
 }
 

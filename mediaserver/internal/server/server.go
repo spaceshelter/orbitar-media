@@ -70,7 +70,7 @@ type Server struct {
 	restoreMu   sync.Mutex
 	restoring   map[string]*flight
 	misses      *missCache
-	invalidated *missCache // hashes deleted or reused lately: a preview download or upload in flight that started earlier mustn't bring the old one back
+	invalidated *missCache // hashes deleted lately: a preview download or upload in flight that started earlier mustn't bring the old one back
 	s3Lookups   *rateLimiter
 	generating  keyedMutex
 	bgWG        sync.WaitGroup
@@ -419,6 +419,13 @@ func (m *missCache) since(k string, t time.Time) bool {
 func (m *missCache) add(k string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.seen) >= m.max {
+		for k, t := range m.seen {
+			if time.Since(t) > m.ttl {
+				delete(m.seen, k)
+			}
+		}
+	}
 	if len(m.seen) >= m.max {
 		m.seen = map[string]time.Time{} // crude, but bounded
 	}

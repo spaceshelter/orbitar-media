@@ -119,7 +119,8 @@ Docker containers orchestrated via docker-compose.yml:
 1. Upload received at `/api/upload.php`
 2. File validated and SHA1 hash computed for deduplication
 3. Handled by type (image/video/text)
-4. Stored locally in `data/<hash>/`, queued for the S3 copy
+4. Stored locally in `data/<hash>/` under a generated name (no custom names), queued for the S3 copy (the delete
+   code rides along as object metadata, so a restore after eviction keeps it)
 5. Returns JSON with hash URL and delete code
 
 ## Video Pipeline (MP4)

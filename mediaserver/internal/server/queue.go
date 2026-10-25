@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/spaceshelter/orbitar-media/mediaserver/internal/s3store"
 	"github.com/spaceshelter/orbitar-media/mediaserver/internal/store"
 )
 
@@ -17,6 +18,10 @@ import (
 // file, so the copy still reaches S3 when the cleanup service evicts the hash directory first.
 // One worker, so pushes of the same hash (the original, then its transcode) can't overtake
 // each other.
+//
+// The S3 copy carries the delete code as metadata (s3DeleteCode), so a restore gives the file
+// back its uploader's code. A copy of the code sits next to the marker (codes/<hash>) for the
+// same reason the marker is a link: the hash directory may be evicted before the copy is made.
 type uploadQueue struct {
 	s       *Server
 	dir     string
@@ -28,18 +33,27 @@ type uploadQueue struct {
 	inflightDeleted bool   // inflight was deleted meanwhile: remove the copy once it lands
 }
 
+// s3DeleteCode is the S3 user metadata name (x-amz-meta-deletecode) of a file's delete code.
+const s3DeleteCode = "deletecode"
+
 func newUploadQueue(s *Server) *uploadQueue {
 	return &uploadQueue{s: s, dir: filepath.Join(s.store.Root, ".s3-pending"), pending: map[string]int{}, wake: make(chan struct{}, 1)}
 }
 
 func (q *uploadQueue) enabled() bool { return q.s.s3 != nil && !q.s.store.ReadOnly }
 
-// push schedules hash for upload.
-func (q *uploadQueue) push(hash string) {
+// push schedules hash for upload, unless it was deleted since start (when the work that led to
+// the push began). Checked under q.mu: deleteHash marks the hash before it calls forget, so a
+// push either sees the mark or lands before forget, which then removes it.
+func (q *uploadQueue) push(hash string, start time.Time) {
 	if !q.enabled() {
 		return
 	}
 	q.mu.Lock()
+	if q.s.invalidated.since(hash, start) {
+		q.mu.Unlock()
+		return
+	}
 	q.writeMarker(hash)
 	q.pending[hash]++
 	if q.inflight == hash {
@@ -53,10 +67,20 @@ func (q *uploadQueue) push(hash string) {
 }
 
 // writeMarker links the stored file into the marker directory (an empty marker when linking
-// fails). Called with q.mu held, so the worker can't remove a marker it hasn't seen.
+// fails). Called with q.mu held, so the worker can't remove a marker it hasn't seen. The delete
+// code is saved first, so the cleanup service evicting the directory right after the link
+// doesn't lose it (upload falls back to the code already in S3 when there is none).
 func (q *uploadQueue) writeMarker(hash string) {
-	if err := os.MkdirAll(q.dir, 0o755); err != nil {
+	if err := os.MkdirAll(q.codesDir(), 0o755); err != nil {
+		log.Printf("s3: marker directory: %v", err)
 		return
+	}
+	if code := q.s.store.DeleteCode(hash); code != "" {
+		if err := store.WriteAtomic(filepath.Join(q.codesDir(), hash), func(tmp string) error {
+			return os.WriteFile(tmp, []byte(code), 0o644)
+		}); err != nil {
+			log.Printf("s3: saving the delete code of %s: %v", hash, err)
+		}
 	}
 	marker := filepath.Join(q.dir, hash)
 	tmp := store.TempName(marker)
@@ -70,11 +94,19 @@ func (q *uploadQueue) writeMarker(hash string) {
 	}
 }
 
+func (q *uploadQueue) codesDir() string { return filepath.Join(q.dir, "codes") }
+
+// removeMarker drops hash's marker and its copy of the delete code.
+func (q *uploadQueue) removeMarker(hash string) {
+	os.Remove(filepath.Join(q.dir, hash))
+	os.Remove(filepath.Join(q.codesDir(), hash))
+}
+
 // forget drops a pending upload (the file was deleted).
 func (q *uploadQueue) forget(hash string) {
 	q.mu.Lock()
 	delete(q.pending, hash)
-	os.Remove(filepath.Join(q.dir, hash))
+	q.removeMarker(hash)
 	if q.inflight == hash {
 		q.inflightDeleted = true
 	}
@@ -97,6 +129,13 @@ func (q *uploadQueue) start() {
 		}
 		if len(q.pending) > 0 {
 			log.Printf("s3: %d uploads pending from an earlier run", len(q.pending))
+		}
+	}
+	if entries, err := os.ReadDir(q.codesDir()); err == nil {
+		for _, e := range entries { // codes whose marker is gone (a crash in between)
+			if _, ok := q.pending[e.Name()]; !ok {
+				os.Remove(filepath.Join(q.codesDir(), e.Name()))
+			}
 		}
 	}
 	q.s.bgWG.Add(1)
@@ -159,7 +198,7 @@ func (q *uploadQueue) run() {
 			delete(attempts, hash)
 			if q.pending[hash] == gen { // not pushed again meanwhile
 				delete(q.pending, hash)
-				os.Remove(filepath.Join(q.dir, hash))
+				q.removeMarker(hash)
 			}
 		default:
 			attempts[hash]++
@@ -201,5 +240,21 @@ func (q *uploadQueue) upload(hash string) error {
 	}
 	ctx, cancel := context.WithTimeout(q.s.bgCtx, 10*time.Minute)
 	defer cancel()
-	return q.s.s3.Put(ctx, hash, path)
+	code := q.s.store.DeleteCode(hash)
+	if code == "" { // evicted: the copy kept with the marker
+		b, _ := os.ReadFile(filepath.Join(q.codesDir(), hash))
+		code = string(b)
+	}
+	if code == "" { // neither (evicted mid-way, or the copy couldn't be saved): keep the one in S3
+		meta, err := q.s.s3.Meta(ctx, hash)
+		if err != nil && err != s3store.ErrNotFound { // e.g. 403 for a missing key without ListBucket: copy anyway
+			log.Printf("s3: metadata of %s: %v", hash, err)
+		}
+		code = meta[s3DeleteCode]
+	}
+	var meta map[string]string
+	if code != "" {
+		meta = map[string]string{s3DeleteCode: code}
+	}
+	return q.s.s3.Put(ctx, hash, path, meta)
 }
