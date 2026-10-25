@@ -141,8 +141,9 @@ MP3 audio, one video + at most one audio stream, `moov` before `mdat`.
   data stream (which would fail the stream-count check on every later scan). The output replaces the file atomically
   and registers the new file's sha1 so re-uploads dedupe, then refreshes the S3 copy.
 - Concurrency: in-process semaphores, `MAX_CONCURRENT_VIDEO_HANDLERS` (ffmpeg: upload remux, transcodes, gif->mp4) and
-  `MAX_CONCURRENT_IMAGE_HANDLERS` (vips, previews). Capacity is reserved *before* the file is stored: a busy upload is
-  rejected with "System is busy" while nothing has been published yet.
+  `MAX_CONCURRENT_IMAGE_HANDLERS` (vips, previews). A video that needs ffmpeg is admitted only while a slot is free,
+  checked *before* the file is stored: a busy upload is rejected with "System is busy" while nothing has been published
+  yet. The upload remux holds its slot; a background transcode only checks for one and waits for it later.
 - `/<width>/` variants of the video itself return 404 (unauthenticated full transcode, nothing links to them), but
   sized previews `/preview/<w>/<hash>.mp4` and `/preview/<w>x<h>/...` are served as a scaled first frame rendered from
   the original, cached as `<w>_<hash>_preview.jpg` (the name PictShare's old resize path produced).
@@ -150,7 +151,8 @@ MP3 audio, one video + at most one audio stream, `moov` before `mdat`.
   `previews/<hash>_preview.jpg`; for an evicted video it is served from there without restoring the video
   (mediaserver/README.md, "Video previews in S3").
 - Every generated file (normalised video, preview, gif->mp4, image variants) is written to a temp name and `rename`d
-  into place; generation failures return 503 `no-store` instead of leaving an empty file.
+  into place; a failed generation is an error response (`no-store`), never an empty file. A failed upload remux
+  keeps and serves the original.
 - Interlace detection decodes the first 5 frames (`ffprobe -read_intervals %+#5`) because ffprobe reports
   `field_order=unknown` for most H.264 streams.
 - Every ffmpeg/ffprobe/vips run goes through `internal/proc`: `ulimit -v` (`FFMPEG_MEMORY_LIMIT_MB`, default 2560, `VIPS_MEMORY_LIMIT_MB` for vips; a 4K
