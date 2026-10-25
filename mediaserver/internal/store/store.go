@@ -147,18 +147,6 @@ func (s *Store) PutVariant(src, hash, name string) (string, error) {
 	return dst, os.Rename(tmp, dst)
 }
 
-// DropVariants removes what is left in hash's directory when hash itself isn't stored (variants
-// of an earlier file under that name), so a new file under the name doesn't inherit them.
-func (s *Store) DropVariants(hash string) error {
-	if !ValidName(hash) {
-		return fmt.Errorf("invalid name %q", hash)
-	}
-	if s.Exists(hash) {
-		return nil
-	}
-	return os.RemoveAll(filepath.Join(s.writeRoot(), hash))
-}
-
 // TempName is a per-call temp name next to target (same filesystem, so rename is atomic).
 func TempName(target string) string {
 	b := make([]byte, 4)

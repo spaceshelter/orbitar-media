@@ -212,7 +212,7 @@ func TestS3DeletedByPictShareInFlight(t *testing.T) {
 	})
 }
 
-// Custom names are restored too (rate limited, unlike dimension hashes).
+// Files stored under custom names earlier are restored too (rate limited, unlike dimension hashes).
 func TestS3RestoreCustomName(t *testing.T) {
 	fake := &fakeS3{objects: map[string][]byte{"my-logo.png": pngBytes(9, 9)}}
 	s3srv := httptest.NewServer(fake)
@@ -286,31 +286,4 @@ func TestS3Previews(t *testing.T) {
 	if r := newS3Server(t, t.TempDir(), fake, s3srv.URL).get("/preview/" + hash); r.code != 404 {
 		t.Errorf("preview of a deleted video: %d", r.code)
 	}
-}
-
-// A custom name reused after its earlier video was evicted doesn't serve the earlier preview.
-func TestS3PreviewsCustomNameReuse(t *testing.T) {
-	fake := &fakeS3{objects: map[string][]byte{}}
-	s3srv := httptest.NewServer(fake)
-	defer s3srv.Close()
-	data := t.TempDir()
-	h := newS3Server(t, data, fake, s3srv.URL)
-	dir := t.TempDir()
-	a := makeVideo(t, dir, "a.mp4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart")
-	if up := h.upload("a.mp4", a, "hash", "clip.mp4"); up["hash"] != "clip.mp4" {
-		t.Fatalf("upload: %v", up)
-	}
-	old := h.get("/preview/clip.mp4")
-	waitFor(t, "preview in S3", func() bool { _, ok := fake.get(previewKey("clip.mp4")); return ok })
-	os.Remove(filepath.Join(data, "clip.mp4", "clip.mp4")) // evicted, but its preview restored from S3 since
-
-	b := makeVideo(t, dir, "b.mp4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", "negate", "-c:a", "aac", "-movflags", "+faststart")
-	if up := h.upload("b.mp4", b, "hash", "clip.mp4"); up["hash"] != "clip.mp4" {
-		t.Fatalf("second upload: %v", up)
-	}
-	cur := h.get("/preview/clip.mp4")
-	if cur.code != 200 || bytes.Equal(cur.body, old.body) {
-		t.Errorf("the new video got the earlier one's preview: %d", cur.code)
-	}
-	waitFor(t, "the new preview in S3", func() bool { b, ok := fake.get(previewKey("clip.mp4")); return ok && bytes.Equal(b, cur.body) })
 }

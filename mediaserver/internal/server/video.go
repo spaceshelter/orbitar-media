@@ -125,7 +125,7 @@ func (s *Server) servePreviewFromS3(w http.ResponseWriter, r *http.Request, hash
 			if err != nil {
 				return err
 			}
-			if s.invalidated.since(hash, start) { // deleted, or its name reused, while it was downloading
+			if s.invalidated.since(hash, start) { // deleted while it was downloading
 				_ = os.Remove(dst)
 				return errors.New("invalidated meanwhile")
 			}
@@ -142,28 +142,6 @@ func (s *Server) servePreviewFromS3(w http.ResponseWriter, r *http.Request, hash
 	return true
 }
 
-// reuseName prepares a custom name for a new upload: what may be left of an earlier, evicted file
-// under it (its variants here, its preview in S3) belongs to that one, and an earlier preview
-// being restored right now must not land afterwards.
-func (s *Server) reuseName(hash string) {
-	s.invalidated.add(hash)
-	if err := s.store.DropVariants(hash); err != nil {
-		log.Printf("drop variants of %s: %v", hash, err)
-	}
-	if store.Ext(hash) == "mp4" && s.s3 != nil && !s.store.ReadOnly {
-		// through the upload worker, so it can't overtake the new video's preview upload
-		select {
-		case s.previewPuts <- previewPut{hash: hash}:
-		default:
-			s.bgWG.Add(1)
-			go func() {
-				defer s.bgWG.Done()
-				s.deletePreviewFromS3(hash)
-			}()
-		}
-	}
-}
-
 func (s *Server) deletePreviewFromS3(hash string) {
 	ctx, cancel := context.WithTimeout(s.bgCtx, time.Minute)
 	defer cancel()
@@ -172,7 +150,7 @@ func (s *Server) deletePreviewFromS3(hash string) {
 	}
 }
 
-type previewPut struct{ hash, path string } // path "": delete hash's preview
+type previewPut struct{ hash, path string }
 
 // uploadPreview copies a freshly rendered preview to S3 in the background. Best effort: a preview
 // that doesn't make it is rendered again the next time it's needed.
@@ -191,10 +169,6 @@ func (s *Server) runPreviewUploads() {
 	for {
 		select {
 		case p := <-s.previewPuts:
-			if p.path == "" {
-				s.deletePreviewFromS3(p.hash)
-				continue
-			}
 			start := time.Now()
 			if !s.store.Exists(p.hash) {
 				continue

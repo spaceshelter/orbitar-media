@@ -70,7 +70,7 @@ type Server struct {
 	restoreMu   sync.Mutex
 	restoring   map[string]*flight
 	misses      *missCache
-	invalidated *missCache // hashes deleted or reused lately: a preview download or upload in flight that started earlier mustn't bring the old one back
+	invalidated *missCache // hashes deleted lately: a preview download or upload in flight that started earlier mustn't bring the old one back
 	s3Lookups   *rateLimiter
 	generating  keyedMutex
 	bgWG        sync.WaitGroup
