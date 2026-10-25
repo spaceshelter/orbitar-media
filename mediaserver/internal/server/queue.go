@@ -247,8 +247,8 @@ func (q *uploadQueue) upload(hash string) error {
 	}
 	if code == "" { // neither (evicted mid-way, or the copy couldn't be saved): keep the one in S3
 		meta, err := q.s.s3.Meta(ctx, hash)
-		if err != nil && err != s3store.ErrNotFound {
-			return err
+		if err != nil && err != s3store.ErrNotFound { // e.g. 403 for a missing key without ListBucket: copy anyway
+			log.Printf("s3: metadata of %s: %v", hash, err)
 		}
 		code = meta[s3DeleteCode]
 	}
