@@ -61,7 +61,7 @@ timeout and `ulimit -v`, so a bad input can only fail its own request.
 | `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_ENDPOINT` | | empty bucket = no S3 |
 | `COUB_PROXY_URL` | | as for PictShare |
 | `MASTER_DELETE_CODE`, `MASTER_DELETE_IP` | | empty = disabled |
-| `MAX_CONCURRENT_VIDEO_HANDLERS` | 4 | ffmpeg runs (remux, transcode, previews of gif->mp4) |
+| `MAX_CONCURRENT_VIDEO_HANDLERS` | 2 | ffmpeg runs (remux, transcode, previews of gif->mp4) |
 | `MAX_CONCURRENT_IMAGE_HANDLERS` | 2 | vips / preview renders |
 | `FFMPEG_MEMORY_LIMIT_MB` | 2560 | `ulimit -v` per ffmpeg / ffprobe |
 | `VIPS_MEMORY_LIMIT_MB` | 1024 | `ulimit -v` per vips run |

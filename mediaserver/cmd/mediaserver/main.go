@@ -119,7 +119,7 @@ func main() {
 		CoubProxyURL:     env("COUB_PROXY_URL", ""),
 		StaticDir:        env("STATIC_DIR", "/srv/static"),
 		TmpDir:           tmpDir,
-		VideoSlots:       envInt("MAX_CONCURRENT_VIDEO_HANDLERS", 4),
+		VideoSlots:       envInt("MAX_CONCURRENT_VIDEO_HANDLERS", 2),
 		ImageSlots:       envInt("MAX_CONCURRENT_IMAGE_HANDLERS", 2),
 	}
 	controllers := strings.ToUpper(env("CONTENTCONTROLLERS", ""))
