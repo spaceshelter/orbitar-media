@@ -28,7 +28,8 @@ timeout and `ulimit -v`, so a bad input can only fail its own request.
   `/api/base64.php`, `/api/pastebin.php`. Query strings are ignored.
 - **API**: same JSON fields and reason strings as PictShare, except an oversized upload gets
   `{"status":"err","reason":"File too big. 50mb max"}` instead of an nginx 413 page. Every `/api/*` request needs
-  `Authorization: Client-ID <CLIENT_ID>`; Caddy checks it, and so does the service. `geturl` fetches only from public
+  `Authorization: Client-ID <CLIENT_ID>`; Caddy checks it, and so does the service. No custom names: the `hash`
+  field of `upload.php` / `geturl.php` is ignored (files stored under custom names earlier are still served). `geturl` fetches only from public
   addresses, with a size cap, a timeout and a redirect limit.
 - **Images**: JPEG uploads are re-encoded with the orientation applied (all 8 EXIF orientations) and metadata
   stripped. Untagged CMYK JPEGs are converted with the plain formula, as browsers and GD do. PNG / GIF / WebP are
@@ -43,13 +44,14 @@ timeout and `ulimit -v`, so a bad input can only fail its own request.
   Uploads go to S3 from a background queue: a marker per pending file in `data/.s3-pending/` (which the
   cleanup service's `ls` doesn't see), retries with backoff, and a sweep at startup. The marker is a hard link to the
   file, so a copy still pending when the cleanup service evicts the directory is not lost. An S3 outage delays the
-  copy, not the upload.
+  copy, not the upload. The delete code goes along as object metadata (`x-amz-meta-deletecode`, also kept next to
+  the marker) and a restore writes it back, so the uploader's delete URL keeps working after eviction. Copies made
+  before that have none: their restore writes a new code, and only the master delete works for them.
 - **Video previews in S3**: the full-size preview frame (`/preview/<hash>.mp4`, the only one Orbitar uses) is copied
   to `previews/<hash>_preview.jpg` in the bucket when rendered (best effort). Its URL, for a video that isn't stored
   locally, is answered from that copy (placed in `data/<hash>/` without the video), so a page of old videos doesn't
   restore every video to render a frame. Without a copy, the video is restored and the frame rendered and uploaded
-  as before. Sized previews are only rendered. Deleting a video removes its preview, and a custom name reused after its
-  file was evicted drops the earlier file's.
+  as before. Sized previews are only rendered. Deleting a video removes its preview.
 - **Read-only mode** (`READ_ONLY=1`): never writes to the data directory. Uploads and deletes return 503. Files
   restored from S3 and generated variants go to a scratch overlay, which is cleared at startup. Lets a second
   instance serve a copy of production's volume and bucket without changing either.

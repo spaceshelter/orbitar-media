@@ -65,19 +65,20 @@ func (c *Client) Exists(ctx context.Context, key string) (bool, error) {
 // ErrNotFound is returned by Get for a missing key.
 var ErrNotFound = errors.New("not found in S3")
 
-// Get downloads key to dst (at most maxBytes, 0 = unlimited).
-func (c *Client) Get(ctx context.Context, key, dst string, maxBytes int64) error {
+// Get downloads key to dst (at most maxBytes, 0 = unlimited) and returns its user metadata
+// (lower-case names, without the x-amz-meta- prefix).
+func (c *Client) Get(ctx context.Context, key, dst string, maxBytes int64) (map[string]string, error) {
 	out, err := c.c.GetObject(ctx, &s3.GetObjectInput{Bucket: &c.bucket, Key: &key})
 	if err != nil {
 		if isNotFound(err) {
-			return ErrNotFound
+			return nil, ErrNotFound
 		}
-		return err
+		return nil, err
 	}
 	defer out.Body.Close()
 	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var r io.Reader = out.Body
 	if maxBytes > 0 {
@@ -92,12 +93,13 @@ func (c *Client) Get(ctx context.Context, key, dst string, maxBytes int64) error
 	}
 	if err != nil {
 		os.Remove(dst)
+		return nil, err
 	}
-	return err
+	return out.Metadata, nil
 }
 
-// Put uploads src as key.
-func (c *Client) Put(ctx context.Context, key, src string) error {
+// Put uploads src as key, with user metadata meta (may be nil).
+func (c *Client) Put(ctx context.Context, key, src string, meta map[string]string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
@@ -107,7 +109,7 @@ func (c *Client) Put(ctx context.Context, key, src string) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.c.PutObject(ctx, &s3.PutObjectInput{Bucket: &c.bucket, Key: &key, Body: f, ContentLength: aws.Int64(st.Size())})
+	_, err = c.c.PutObject(ctx, &s3.PutObjectInput{Bucket: &c.bucket, Key: &key, Body: f, ContentLength: aws.Int64(st.Size()), Metadata: meta})
 	return err
 }
 

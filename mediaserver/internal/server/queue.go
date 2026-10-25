@@ -17,6 +17,10 @@ import (
 // file, so the copy still reaches S3 when the cleanup service evicts the hash directory first.
 // One worker, so pushes of the same hash (the original, then its transcode) can't overtake
 // each other.
+//
+// The S3 copy carries the delete code as metadata (s3DeleteCode), so a restore gives the file
+// back its uploader's code. A copy of the code sits next to the marker (codes/<hash>) for the
+// same reason the marker is a link: the hash directory may be evicted before the copy is made.
 type uploadQueue struct {
 	s       *Server
 	dir     string
@@ -27,6 +31,9 @@ type uploadQueue struct {
 	inflight        string // hash the worker is uploading
 	inflightDeleted bool   // inflight was deleted meanwhile: remove the copy once it lands
 }
+
+// s3DeleteCode is the S3 user metadata name (x-amz-meta-deletecode) of a file's delete code.
+const s3DeleteCode = "deletecode"
 
 func newUploadQueue(s *Server) *uploadQueue {
 	return &uploadQueue{s: s, dir: filepath.Join(s.store.Root, ".s3-pending"), pending: map[string]int{}, wake: make(chan struct{}, 1)}
@@ -68,13 +75,26 @@ func (q *uploadQueue) writeMarker(hash string) {
 	if err := os.Rename(tmp, marker); err != nil {
 		os.Remove(tmp)
 	}
+	if code := q.s.store.DeleteCode(hash); code != "" && os.MkdirAll(q.codesDir(), 0o755) == nil {
+		_ = store.WriteAtomic(filepath.Join(q.codesDir(), hash), func(tmp string) error {
+			return os.WriteFile(tmp, []byte(code), 0o644)
+		})
+	}
+}
+
+func (q *uploadQueue) codesDir() string { return filepath.Join(q.dir, "codes") }
+
+// removeMarker drops hash's marker and its copy of the delete code.
+func (q *uploadQueue) removeMarker(hash string) {
+	os.Remove(filepath.Join(q.dir, hash))
+	os.Remove(filepath.Join(q.codesDir(), hash))
 }
 
 // forget drops a pending upload (the file was deleted).
 func (q *uploadQueue) forget(hash string) {
 	q.mu.Lock()
 	delete(q.pending, hash)
-	os.Remove(filepath.Join(q.dir, hash))
+	q.removeMarker(hash)
 	if q.inflight == hash {
 		q.inflightDeleted = true
 	}
@@ -97,6 +117,13 @@ func (q *uploadQueue) start() {
 		}
 		if len(q.pending) > 0 {
 			log.Printf("s3: %d uploads pending from an earlier run", len(q.pending))
+		}
+	}
+	if entries, err := os.ReadDir(q.codesDir()); err == nil {
+		for _, e := range entries { // codes whose marker is gone (a crash in between)
+			if _, ok := q.pending[e.Name()]; !ok {
+				os.Remove(filepath.Join(q.codesDir(), e.Name()))
+			}
 		}
 	}
 	q.s.bgWG.Add(1)
@@ -159,7 +186,7 @@ func (q *uploadQueue) run() {
 			delete(attempts, hash)
 			if q.pending[hash] == gen { // not pushed again meanwhile
 				delete(q.pending, hash)
-				os.Remove(filepath.Join(q.dir, hash))
+				q.removeMarker(hash)
 			}
 		default:
 			attempts[hash]++
@@ -199,7 +226,16 @@ func (q *uploadQueue) upload(hash string) error {
 	if _, err := os.Stat(path); err != nil {
 		return err
 	}
+	code := q.s.store.DeleteCode(hash)
+	if code == "" { // evicted: the copy kept with the marker
+		b, _ := os.ReadFile(filepath.Join(q.codesDir(), hash))
+		code = string(b)
+	}
+	var meta map[string]string
+	if code != "" {
+		meta = map[string]string{s3DeleteCode: code}
+	}
 	ctx, cancel := context.WithTimeout(q.s.bgCtx, 10*time.Minute)
 	defer cancel()
-	return q.s.s3.Put(ctx, hash, path)
+	return q.s.s3.Put(ctx, hash, path, meta)
 }

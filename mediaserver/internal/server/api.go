@@ -276,7 +276,7 @@ func (s *Server) claim(ext string, w, h int) (string, *answer) {
 }
 
 func (s *Server) put(tmp, name string) *answer {
-	if _, err := s.store.Put(tmp, name); err != nil {
+	if _, err := s.store.Put(tmp, name, ""); err != nil {
 		log.Printf("store %s: %v", name, err)
 		return &answer{reason: "Could not store file"}
 	}

@@ -150,18 +150,19 @@ func (s *Server) restoreFromS3(ctx context.Context, name string) bool {
 	maxBytes := int64(max(s.cfg.MaxUploadMB, 1)) * 1_000_000 * 4 // originals are bounded by the upload limit
 	return s.fetchFromS3(ctx, name, maxBytes, func() bool { return s.s3Candidate(name) },
 		func() bool { return s.store.Exists(name) },
-		func(tmp string) error {
-			if _, err := s.store.Put(tmp, name); err != nil && err != store.ErrExists {
+		func(tmp string, meta map[string]string) error {
+			// the uploader's delete code travels with the S3 copy (absent on copies made before it did)
+			if _, err := s.store.Put(tmp, name, meta[s3DeleteCode]); err != nil && err != store.ErrExists {
 				return err
 			}
 			return nil
 		})
 }
 
-// fetchFromS3 downloads key and hands the file to place. Concurrent requests for the same key
+// fetchFromS3 downloads key and hands the file and its S3 metadata to place. Concurrent requests for the same key
 // share one download, and at most cap(restoreSlots) downloads run at a time. candidate decides
 // whether key is worth a lookup at all, have whether it is already here.
-func (s *Server) fetchFromS3(ctx context.Context, key string, maxBytes int64, candidate, have func() bool, place func(tmp string) error) bool {
+func (s *Server) fetchFromS3(ctx context.Context, key string, maxBytes int64, candidate, have func() bool, place func(tmp string, meta map[string]string) error) bool {
 	if s.s3 == nil || s.misses.has(key) {
 		return false
 	}
@@ -199,7 +200,7 @@ func (s *Server) fetchFromS3(ctx context.Context, key string, maxBytes int64, ca
 	dctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	tmp := store.TempName(filepath.Join(s.cfg.TmpDir, "s3-"+strings.ReplaceAll(key, "/", "_")))
-	err := s.s3.Get(dctx, key, tmp, maxBytes)
+	meta, err := s.s3.Get(dctx, key, tmp, maxBytes)
 	if err == s3store.ErrNotFound {
 		s.misses.add(key)
 		return false
@@ -209,7 +210,7 @@ func (s *Server) fetchFromS3(ctx context.Context, key string, maxBytes int64, ca
 		return false
 	}
 	defer os.Remove(tmp)
-	if err := place(tmp); err != nil {
+	if err := place(tmp, meta); err != nil {
 		log.Printf("s3 restore %s: %v", key, err)
 		return false
 	}

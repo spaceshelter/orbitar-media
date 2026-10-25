@@ -1,5 +1,4 @@
-// Package store is PictShare's on-disk layout, shared with the PHP version so that either can run
-// on the same volume:
+// Package store is PictShare's on-disk layout, so files PictShare stored are served as they are:
 //
 //	data/<hash>/<hash>       the original (or normalised) upload
 //	data/<hash>/deletecode   32 chars [0-9a-z]
@@ -175,9 +174,10 @@ func WriteAtomic(target string, gen func(tmp string) error) error {
 // ErrExists is returned by Put when the hash is already taken.
 var ErrExists = errors.New("hash already exists")
 
-// Put stores src under hash (moving it when possible), creates the delete code and records the
-// stored file's sha1. Returns the delete code.
-func (s *Store) Put(src, hash string) (string, error) {
+// Put stores src under hash (moving it when possible), writes the delete code and records the
+// stored file's sha1. code is the file's existing delete code (a restore); "" or a malformed one
+// gets a new one. Returns the delete code.
+func (s *Store) Put(src, hash, code string) (string, error) {
 	if !ValidName(hash) {
 		return "", fmt.Errorf("invalid name %q", hash)
 	}
@@ -213,7 +213,9 @@ func (s *Store) Put(src, hash string) (string, error) {
 		}
 		return "", err
 	}
-	code := hashcodec.Random(32)
+	if !deleteCodeRe.MatchString(code) {
+		code = hashcodec.Random(32)
+	}
 	if err := WriteAtomic(filepath.Join(dir, "deletecode"), func(tmp string) error {
 		return os.WriteFile(tmp, []byte(code), 0o644)
 	}); err != nil {
@@ -248,6 +250,8 @@ func moveOrCopy(src, dst string) error {
 	os.Remove(src)
 	return nil
 }
+
+var deleteCodeRe = regexp.MustCompile(`^[0-9a-z]{32}$`)
 
 // DeleteCode returns the delete code of hash ("" when there is none).
 func (s *Store) DeleteCode(hash string) string {

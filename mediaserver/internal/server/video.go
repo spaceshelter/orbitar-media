@@ -120,7 +120,7 @@ func (s *Server) servePreviewFromS3(w http.ResponseWriter, r *http.Request, hash
 	start := time.Now()
 	if !have() && !s.fetchFromS3(r.Context(), previewKey(hash), maxPreviewBytes,
 		func() bool { return s.s3Candidate(hash) }, have,
-		func(tmp string) error {
+		func(tmp string, _ map[string]string) error {
 			dst, err := s.store.PutVariant(tmp, hash, name)
 			if err != nil {
 				return err
@@ -174,7 +174,7 @@ func (s *Server) runPreviewUploads() {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(s.bgCtx, time.Minute)
-			err := s.s3.Put(ctx, previewKey(p.hash), p.path)
+			err := s.s3.Put(ctx, previewKey(p.hash), p.path, nil)
 			cancel()
 			if err != nil && !os.IsNotExist(err) {
 				log.Printf("s3: upload of preview %s: %v", p.path, err)
