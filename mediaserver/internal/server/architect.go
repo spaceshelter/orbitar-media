@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/spaceshelter/orbitar-media/mediaserver/internal/s3store"
@@ -54,6 +53,9 @@ func (s *Server) architect(w http.ResponseWriter, r *http.Request) {
 		if s.store.Exists(seg) {
 			hash = seg
 			break
+		}
+		if s.servePreviewFromS3(w, r, seg, segs) {
+			return
 		}
 		if s.restoreFromS3(r.Context(), seg) {
 			hash = seg
@@ -106,6 +108,7 @@ func (s *Server) deleteAllowed(r *http.Request, hash, code string) bool {
 }
 
 func (s *Server) deleteHash(ctx context.Context, hash string) {
+	s.invalidated.add(hash) // before anything is removed: see servePreviewFromS3 and runPreviewUploads
 	if err := s.store.Delete(hash); err != nil {
 		log.Printf("delete %s: %v", hash, err)
 	}
@@ -114,6 +117,13 @@ func (s *Server) deleteHash(ctx context.Context, hash string) {
 		if err := s.s3.Delete(ctx, hash); err != nil {
 			log.Printf("delete %s from S3: %v", hash, err)
 		}
+		if store.Ext(hash) == "mp4" {
+			s.deletePreviewFromS3(hash)
+		}
+		// a preview restored from S3 while that ran: removed here if it landed already, and
+		// rejected by the newer mark if it lands later
+		s.invalidated.add(hash)
+		_ = s.store.Delete(hash)
 	}
 }
 
@@ -135,34 +145,48 @@ func (s *Server) s3Candidate(name string) bool {
 	return s.s3Lookups.allow()
 }
 
-// restoreFromS3 pulls name into the data directory when S3 has it. Concurrent requests for the
-// same name share one download, and at most cap(restoreSlots) downloads run at a time.
+// restoreFromS3 pulls name into the data directory when S3 has it.
 func (s *Server) restoreFromS3(ctx context.Context, name string) bool {
-	if s.s3 == nil || s.misses.has(name) {
+	maxBytes := int64(max(s.cfg.MaxUploadMB, 1)) * 1_000_000 * 4 // originals are bounded by the upload limit
+	return s.fetchFromS3(ctx, name, maxBytes, func() bool { return s.s3Candidate(name) },
+		func() bool { return s.store.Exists(name) },
+		func(tmp string) error {
+			if _, err := s.store.Put(tmp, name); err != nil && err != store.ErrExists {
+				return err
+			}
+			return nil
+		})
+}
+
+// fetchFromS3 downloads key and hands the file to place. Concurrent requests for the same key
+// share one download, and at most cap(restoreSlots) downloads run at a time. candidate decides
+// whether key is worth a lookup at all, have whether it is already here.
+func (s *Server) fetchFromS3(ctx context.Context, key string, maxBytes int64, candidate, have func() bool, place func(tmp string) error) bool {
+	if s.s3 == nil || s.misses.has(key) {
 		return false
 	}
 	s.restoreMu.Lock()
-	if wg, ok := s.restoring[name]; ok {
+	if f, ok := s.restoring[key]; ok {
 		s.restoreMu.Unlock()
-		wg.Wait()
-		return s.store.Exists(name)
+		<-f.done
+		return f.ok
 	}
-	if !s.s3Candidate(name) {
+	if !candidate() {
 		s.restoreMu.Unlock()
 		return false
 	}
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	s.restoring[name] = wg
+	f := &flight{done: make(chan struct{})}
+	s.restoring[key] = f
 	s.restoreMu.Unlock()
 	defer func() {
 		s.restoreMu.Lock()
-		delete(s.restoring, name)
+		delete(s.restoring, key)
 		s.restoreMu.Unlock()
-		wg.Done()
+		close(f.done)
 	}()
 
-	if s.store.Exists(name) {
+	if have() {
+		f.ok = true
 		return true
 	}
 	select {
@@ -174,21 +198,27 @@ func (s *Server) restoreFromS3(ctx context.Context, name string) bool {
 	// detached from the request: a client hanging up must not leave half the work done
 	dctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	tmp := store.TempName(filepath.Join(s.cfg.TmpDir, "s3-"+name))
-	maxBytes := int64(max(s.cfg.MaxUploadMB, 1)) * 1_000_000 * 4 // originals are bounded by the upload limit
-	err := s.s3.Get(dctx, name, tmp, maxBytes)
+	tmp := store.TempName(filepath.Join(s.cfg.TmpDir, "s3-"+strings.ReplaceAll(key, "/", "_")))
+	err := s.s3.Get(dctx, key, tmp, maxBytes)
 	if err == s3store.ErrNotFound {
-		s.misses.add(name)
+		s.misses.add(key)
 		return false
 	}
 	if err != nil {
-		log.Printf("s3 restore %s: %v", name, err)
+		log.Printf("s3 restore %s: %v", key, err)
 		return false
 	}
 	defer os.Remove(tmp)
-	if _, err := s.store.Put(tmp, name); err != nil && err != store.ErrExists {
-		log.Printf("s3 restore %s: %v", name, err)
+	if err := place(tmp); err != nil {
+		log.Printf("s3 restore %s: %v", key, err)
 		return false
 	}
+	f.ok = true
 	return true
+}
+
+// flight is one S3 download that later requests for the same key wait for.
+type flight struct {
+	done chan struct{}
+	ok   bool
 }

@@ -46,6 +46,12 @@ timeout and `ulimit -v`, so a bad input can only fail its own request.
   cleanup service's `ls` doesn't see), retries with backoff, and a sweep at startup. The marker is a hard link to the
   file, so a copy still pending when the cleanup service evicts the directory is not lost. An S3 outage delays the
   copy, not the upload.
+- **Video previews in S3**: the full-size preview frame (`/preview/<hash>.mp4`, the only one Orbitar uses) is copied
+  to `previews/<hash>_preview.jpg` in the bucket when rendered (best effort). Its URL, for a video that isn't stored
+  locally, is answered from that copy (placed in `data/<hash>/` without the video), so a page of old videos doesn't
+  restore every video to render a frame. Without a copy, the video is restored and the frame rendered and uploaded
+  as before. Sized previews are only rendered. Deleting a video removes its preview, and a custom name reused after its
+  file was evicted drops the earlier file's. PictShare doesn't know about these (it takes `data/<hash>/` as "stored").
 - **Read-only mode** (`READ_ONLY=1`): never writes to the data directory. Uploads and deletes return 503. Files
   restored from S3 and generated variants go to a scratch overlay, which is cleared at startup. Used to run next to
   PictShare for comparison.

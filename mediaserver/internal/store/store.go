@@ -113,6 +113,52 @@ func (s *Store) VariantPath(hash, name string) string {
 	return filepath.Join(s.Root, hash, name)
 }
 
+// FindVariant returns where the generated file name of hash is, "" when it doesn't exist (unlike
+// VariantPath, never creates anything).
+func (s *Store) FindVariant(hash, name string) string {
+	if !ValidName(hash) || strings.ContainsAny(name, "/\\") {
+		return ""
+	}
+	if p := filepath.Join(s.Root, hash, name); isFile(p) {
+		return p
+	}
+	if p := filepath.Join(s.Overlay, hash, name); s.ReadOnly && isFile(p) {
+		return p
+	}
+	return ""
+}
+
+// PutVariant moves src into place as the generated file name of hash (a video preview restored
+// from S3, possibly without the video; in read-only mode always to the overlay) and returns
+// where it went.
+func (s *Store) PutVariant(src, hash, name string) (string, error) {
+	if !ValidName(hash) || strings.ContainsAny(name, "/\\") || name == hash {
+		return "", fmt.Errorf("invalid variant %q of %q", name, hash)
+	}
+	dst := filepath.Join(s.writeRoot(), hash, name)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", err
+	}
+	tmp := TempName(dst)
+	defer os.Remove(tmp)
+	if err := moveOrCopy(src, tmp); err != nil {
+		return "", err
+	}
+	return dst, os.Rename(tmp, dst)
+}
+
+// DropVariants removes what is left in hash's directory when hash itself isn't stored (variants
+// of an earlier file under that name), so a new file under the name doesn't inherit them.
+func (s *Store) DropVariants(hash string) error {
+	if !ValidName(hash) {
+		return fmt.Errorf("invalid name %q", hash)
+	}
+	if s.Exists(hash) {
+		return nil
+	}
+	return os.RemoveAll(filepath.Join(s.writeRoot(), hash))
+}
+
 // TempName is a per-call temp name next to target (same filesystem, so rename is atomic).
 func TempName(target string) string {
 	b := make([]byte, 4)
