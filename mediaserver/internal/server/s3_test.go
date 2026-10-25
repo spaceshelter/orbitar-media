@@ -25,6 +25,7 @@ type fakeS3 struct {
 	objects map[string][]byte
 	meta    map[string]http.Header // x-amz-meta-* headers of each PUT
 	gets    int
+	puts    int
 	deletes int
 	down    bool             // every request fails
 	putHook func(key string) // runs before a PUT is stored, outside the lock
@@ -45,6 +46,7 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		b, _ := io.ReadAll(r.Body)
 		f.objects[key] = b
+		f.puts++
 		if f.meta == nil {
 			f.meta = map[string]http.Header{}
 		}
@@ -142,9 +144,21 @@ func TestS3QueueAndRestore(t *testing.T) {
 		return len(entries) == 1 && entries[0].Name() == "codes" && len(codes) == 0
 	})
 
-	if got, want := fake.deleteCode(hash), h.s.store.DeleteCode(hash); got != want || want == "" {
-		t.Errorf("delete code in S3: %q, want %q", got, want)
+	code := h.s.store.DeleteCode(hash)
+	if got := fake.deleteCode(hash); got != code || code == "" {
+		t.Errorf("delete code in S3: %q, want %q", got, code)
 	}
+	// a refresh (transcode) that finds no code locally keeps the one in S3
+	_ = os.Remove(filepath.Join(data, hash, "deletecode"))
+	fake.mu.Lock()
+	puts := fake.puts
+	fake.mu.Unlock()
+	h.s.queue.push(hash, time.Now())
+	waitFor(t, "refresh", func() bool { fake.mu.Lock(); defer fake.mu.Unlock(); return fake.puts > puts })
+	if got := fake.deleteCode(hash); got != code {
+		t.Errorf("delete code in S3 after a refresh without one: %q, want %q", got, code)
+	}
+	_ = os.WriteFile(filepath.Join(data, hash, "deletecode"), []byte(code), 0o644)
 
 	// a second instance with an empty data dir restores from S3 on a miss, with the uploader's
 	// delete code

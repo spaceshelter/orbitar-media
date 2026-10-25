@@ -420,6 +420,13 @@ func (m *missCache) add(k string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.seen) >= m.max {
+		for k, t := range m.seen {
+			if time.Since(t) > m.ttl {
+				delete(m.seen, k)
+			}
+		}
+	}
+	if len(m.seen) >= m.max {
 		m.seen = map[string]time.Time{} // crude, but bounded
 	}
 	m.seen[k] = time.Now()

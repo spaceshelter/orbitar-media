@@ -50,19 +50,19 @@ func New(cfg Config) *Client {
 	return &Client{c: s3.New(opts), bucket: cfg.Bucket}
 }
 
-// Exists reports whether key is in the bucket.
-func (c *Client) Exists(ctx context.Context, key string) (bool, error) {
-	_, err := c.c.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &c.bucket, Key: &key})
-	if err == nil {
-		return true, nil
+// Meta returns key's user metadata (see Get), ErrNotFound when it isn't in the bucket.
+func (c *Client) Meta(ctx context.Context, key string) (map[string]string, error) {
+	out, err := c.c.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &c.bucket, Key: &key})
+	if err != nil {
+		if isNotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
 	}
-	if isNotFound(err) {
-		return false, nil
-	}
-	return false, err
+	return out.Metadata, nil
 }
 
-// ErrNotFound is returned by Get for a missing key.
+// ErrNotFound is returned by Get and Meta for a missing key.
 var ErrNotFound = errors.New("not found in S3")
 
 // Get downloads key to dst (at most maxBytes, 0 = unlimited) and returns its user metadata

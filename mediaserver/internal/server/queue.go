@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/spaceshelter/orbitar-media/mediaserver/internal/s3store"
 	"github.com/spaceshelter/orbitar-media/mediaserver/internal/store"
 )
 
@@ -67,8 +68,8 @@ func (q *uploadQueue) push(hash string, start time.Time) {
 
 // writeMarker links the stored file into the marker directory (an empty marker when linking
 // fails). Called with q.mu held, so the worker can't remove a marker it hasn't seen. The delete
-// code is saved first: a marker that links the file always has its code next to it, even when
-// the cleanup service evicts the directory right after the link.
+// code is saved first, so the cleanup service evicting the directory right after the link
+// doesn't lose it (upload falls back to the code already in S3 when there is none).
 func (q *uploadQueue) writeMarker(hash string) {
 	if err := os.MkdirAll(q.codesDir(), 0o755); err != nil {
 		log.Printf("s3: marker directory: %v", err)
@@ -237,16 +238,23 @@ func (q *uploadQueue) upload(hash string) error {
 	if _, err := os.Stat(path); err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(q.s.bgCtx, 10*time.Minute)
+	defer cancel()
 	code := q.s.store.DeleteCode(hash)
 	if code == "" { // evicted: the copy kept with the marker
 		b, _ := os.ReadFile(filepath.Join(q.codesDir(), hash))
 		code = string(b)
 	}
+	if code == "" { // neither (evicted mid-way, or the copy couldn't be saved): keep the one in S3
+		meta, err := q.s.s3.Meta(ctx, hash)
+		if err != nil && err != s3store.ErrNotFound {
+			return err
+		}
+		code = meta[s3DeleteCode]
+	}
 	var meta map[string]string
 	if code != "" {
 		meta = map[string]string{s3DeleteCode: code}
 	}
-	ctx, cancel := context.WithTimeout(q.s.bgCtx, 10*time.Minute)
-	defer cancel()
 	return q.s.s3.Put(ctx, hash, path, meta)
 }

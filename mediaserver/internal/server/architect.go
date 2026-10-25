@@ -154,12 +154,13 @@ func (s *Server) restoreFromS3(ctx context.Context, name string) bool {
 		func() bool { return s.store.Exists(name) },
 		func(tmp string, meta map[string]string) error {
 			// the uploader's delete code travels with the S3 copy (absent on copies made before it did)
-			if _, err := s.store.Put(tmp, name, meta[s3DeleteCode]); err != nil && err != store.ErrExists {
-				return err
-			}
-			if s.invalidated.since(name, start) { // deleted while it was downloading
+			_, err := s.store.Put(tmp, name, meta[s3DeleteCode])
+			if s.invalidated.since(name, start) { // deleted while it was downloading (Put may have published it and failed later)
 				_ = s.store.Delete(name)
 				return errors.New("deleted meanwhile")
+			}
+			if err != nil && err != store.ErrExists {
+				return err
 			}
 			return nil
 		})
