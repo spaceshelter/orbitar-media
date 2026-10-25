@@ -269,8 +269,7 @@ func (s *Server) plainError(w http.ResponseWriter, code int, msg string) {
 	_, _ = w.Write([]byte(msg))
 }
 
-// kv is an ordered JSON object (PHP arrays keep insertion order; Orbitar doesn't care, but
-// diffs against the PHP service are easier to read).
+// kv is an ordered JSON object, in PictShare's field order (Orbitar doesn't care).
 type kv struct {
 	k string
 	v any

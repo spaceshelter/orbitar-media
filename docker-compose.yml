@@ -10,7 +10,6 @@ services:
     environment:
       SERVER_DOMAIN: ${SERVER_DOMAIN}
       CLIENT_ID: ${CLIENT_ID}
-      BACKEND: ${BACKEND:-php}  # php or go: the service (network alias) that gets the traffic, see media.caddy
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/media.caddy:/etc/caddy/media.caddy:ro
@@ -18,36 +17,11 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - pictshare
       - mediaserver
     # Default caddy command borrowed from https://github.com/caddyserver/caddy-docker/blob/master/Dockerfile.tmpl
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--watch"]
 
-  pictshare:
-    build:
-      context: pictshare
-    restart: unless-stopped
-    environment:
-      HASH_DIMS_AES_KEY: ${HASH_DIMS_AES_KEY}
-      CLIENT_ID: ${CLIENT_ID}  # geturl.php checks it itself too
-      CONTENTCONTROLLERS: "IMAGE,VIDEO"
-      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-50}
-      PHP_MEMORY_LIMIT: ${PHP_MEMORY_LIMIT:-256}  # PHP 8.4 GD needs a second full-size buffer for large PNG decode / WebP encode
-      MAX_CONCURRENT_VIDEO_HANDLERS: ${MAX_CONCURRENT_VIDEO_HANDLERS:-2}
-      FFMPEG_MEMORY_LIMIT_MB: ${FFMPEG_MEMORY_LIMIT_MB:-2560}
-      S3_BUCKET: ${S3_BUCKET}
-      S3_REGION: ${S3_REGION}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
-      S3_SECRET_KEY: ${S3_SECRET_KEY}
-      COUB_PROXY_URL: ${COUB_PROXY_URL:-}
-    volumes:
-      - pictshare_data:/var/www/data
-    networks:
-      default:
-        aliases: [php]
-
-  # Go replacement for pictshare (mediaserver/README.md). Both always run on the same data volume;
-  # BACKEND in .env picks the one Caddy sends traffic to, the other one idles.
+  # Serves everything behind Caddy (mediaserver/README.md)
   mediaserver:
     build:
       context: .
@@ -72,9 +46,6 @@ services:
       TOUCH_ON_ACCESS_MINUTES: ${MEDIASERVER_TOUCH_ON_ACCESS_MINUTES:-0}
     volumes:
       - pictshare_data:/var/www/data
-    networks:
-      default:
-        aliases: [go]
 
   cleanup:
     build:
@@ -88,7 +59,7 @@ services:
 volumes:
   caddy_data:
   caddy_config:
-  pictshare_data:
+  pictshare_data:  # historical name, kept so existing deployments keep their volume
     driver: local
     driver_opts:
         type: none

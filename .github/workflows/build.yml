@@ -24,10 +24,15 @@ jobs:
               caddy validate --config /etc/caddy/$f --adapter caddyfile
           done
 
-      - name: Build backend & frontend
+      - name: Build images
         run: docker compose build
 
-      - name: Test and build mediaserver (Go)
-        run: |
-          docker build -f mediaserver/Dockerfile --target test .
-          docker build -f mediaserver/Dockerfile .
+  mediaserver-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      # go vet + go test against the real vips/ffmpeg/file binaries (the Dockerfile's test stage)
+      - name: Go tests
+        run: docker build -f mediaserver/Dockerfile --target test .

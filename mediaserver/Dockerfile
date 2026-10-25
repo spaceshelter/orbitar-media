@@ -1,4 +1,4 @@
-# Build context: the repository root (the text page reuses PictShare's css/js/fonts).
+# Build context: the repository root.
 #   docker build -f mediaserver/Dockerfile .
 #   docker build -f mediaserver/Dockerfile --target test .   # unit + integration tests
 
@@ -16,12 +16,10 @@ RUN go vet ./... && go test ./...
 
 FROM alpine:3.24
 RUN apk add --no-cache vips-tools ffmpeg file ca-certificates tzdata \
-    # same ids as the nginx user of the PictShare image, so both can use the data volume
+    # the ids of the nginx user of the old PictShare image, which owns the files on the data volume
     && addgroup -g 101 -S nginx && adduser -u 100 -S -D -H -G nginx nginx
 COPY --from=build /out/mediaserver /usr/local/bin/mediaserver
-COPY pictshare/css /srv/static/css
-COPY pictshare/js /srv/static/js
-COPY pictshare/fonts /srv/static/fonts
+COPY mediaserver/static /srv/static
 ENV DATA_DIR=/var/www/data STATIC_DIR=/srv/static TMP_DIR=/tmp/mediaserver LISTEN=:80
 USER nginx
 EXPOSE 80

@@ -1,7 +1,0 @@
-tmp/*
-inc/config.inc.php
-data/*
-bin
-.git
-.github
-storage-controllers/s3/vendor

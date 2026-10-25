@@ -14,13 +14,5 @@ route {
     }
     respond @hasAuth 403
 
-    # ?backend=go sends the request to the Go mediaserver whatever BACKEND says (testing). A query parameter because Bunny keys its cache on the query string, so
-    # these answers never land under the plain URL; it ignores headers and strips cookies.
-    @goBackend query backend=go
-    reverse_proxy @goBackend http://mediaserver:80 {
-        header_down X-Backend go
-    }
-
-    # everything else: BACKEND from .env, php (pictshare) or go (mediaserver); both are network aliases
-    reverse_proxy http://{$BACKEND:php}:80
+    reverse_proxy http://mediaserver:80
 }
