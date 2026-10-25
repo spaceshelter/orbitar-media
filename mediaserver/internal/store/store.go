@@ -4,8 +4,6 @@
 //	data/<hash>/<hash>       the original (or normalised) upload
 //	data/<hash>/deletecode   32 chars [0-9a-z]
 //	data/<hash>/<variant>    generated files (resized images, previews, gif->mp4)
-//	data/<hash>.previews/    video previews restored from S3 while the video itself isn't here
-//	                         (a directory of its own: PictShare takes data/<hash>/ for "stored")
 //	data/sha1.csv            "sha1;hash\n" lines, append-only, for dedupe
 package store
 
@@ -115,35 +113,35 @@ func (s *Store) VariantPath(hash, name string) string {
 	return filepath.Join(s.Root, hash, name)
 }
 
-// PreviewPath is where a video preview restored from S3 without its video lives. In read-only
-// mode one already in Root is used, new ones go to the overlay.
-func (s *Store) PreviewPath(hash, name string) string {
-	dir := hash + ".previews"
-	if s.ReadOnly {
-		if p := filepath.Join(s.Root, dir, name); isFile(p) {
-			return p
-		}
-		return filepath.Join(s.Overlay, dir, name)
+// PutVariant moves src into place as the generated file name of hash (a video preview restored
+// from S3, possibly without the video; in read-only mode always to the overlay) and returns
+// where it went.
+func (s *Store) PutVariant(src, hash, name string) (string, error) {
+	if !ValidName(hash) || strings.ContainsAny(name, "/\\") || name == hash {
+		return "", fmt.Errorf("invalid variant %q of %q", name, hash)
 	}
-	return filepath.Join(s.Root, dir, name)
-}
-
-// PutPreview moves src into hash's restored previews as name (in read-only mode always to the
-// overlay).
-func (s *Store) PutPreview(src, hash, name string) error {
-	if !ValidName(hash) || strings.ContainsAny(name, "/\\") {
-		return fmt.Errorf("invalid preview %q of %q", name, hash)
-	}
-	dst := filepath.Join(s.writeRoot(), hash+".previews", name)
+	dst := filepath.Join(s.writeRoot(), hash, name)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
+		return "", err
 	}
 	tmp := TempName(dst)
 	defer os.Remove(tmp)
 	if err := moveOrCopy(src, tmp); err != nil {
-		return err
+		return "", err
 	}
-	return os.Rename(tmp, dst)
+	return dst, os.Rename(tmp, dst)
+}
+
+// DropVariants removes what is left in hash's directory when hash itself isn't stored (variants
+// of an earlier file under that name), so a new file under the name doesn't inherit them.
+func (s *Store) DropVariants(hash string) error {
+	if !ValidName(hash) {
+		return fmt.Errorf("invalid name %q", hash)
+	}
+	if s.Exists(hash) {
+		return nil
+	}
+	return os.RemoveAll(filepath.Join(s.writeRoot(), hash))
 }
 
 // TempName is a per-call temp name next to target (same filesystem, so rename is atomic).
@@ -257,7 +255,7 @@ func (s *Store) DeleteCode(hash string) string {
 	return string(b)
 }
 
-// Delete removes hash, all its variants and its restored previews.
+// Delete removes hash and all its variants.
 func (s *Store) Delete(hash string) error {
 	if s.ReadOnly {
 		return errors.New("read-only")
@@ -265,18 +263,7 @@ func (s *Store) Delete(hash string) error {
 	if !ValidName(hash) {
 		return fmt.Errorf("invalid name %q", hash)
 	}
-	if err := s.DropPreviews(hash); err != nil {
-		return err
-	}
 	return os.RemoveAll(filepath.Join(s.Root, hash))
-}
-
-// DropPreviews removes the previews of hash restored from S3.
-func (s *Store) DropPreviews(hash string) error {
-	if !ValidName(hash) {
-		return fmt.Errorf("invalid name %q", hash)
-	}
-	return os.RemoveAll(filepath.Join(s.writeRoot(), hash+".previews"))
 }
 
 // FileSHA1 returns the hex sha1 of a file.

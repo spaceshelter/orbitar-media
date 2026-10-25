@@ -264,8 +264,8 @@ func TestS3Previews(t *testing.T) {
 	if r := h2.get("/preview/160/" + hash); r.code != 200 || !bytes.Equal(r.body, r2.body) {
 		t.Fatalf("preview from S3: %d", r.code)
 	}
-	if _, err := os.Stat(filepath.Join(data2, hash)); !os.IsNotExist(err) {
-		t.Error("the video's directory was created for its preview (PictShare would take the video as stored)")
+	if _, err := os.Stat(filepath.Join(data2, hash, hash)); !os.IsNotExist(err) {
+		t.Error("the video was restored for its preview")
 	}
 	n := fake.gets
 	if r := h2.get("/preview/160/" + hash); r.code != 200 || fake.gets != n {
@@ -301,4 +301,33 @@ func TestS3Previews(t *testing.T) {
 		}
 	}
 	fake.mu.Unlock()
+	if r := newS3Server(t, t.TempDir(), fake, s3srv.URL).get("/preview/160/" + hash); r.code != 404 {
+		t.Errorf("preview of a deleted video: %d", r.code)
+	}
+}
+
+// A custom name reused after its earlier video was evicted doesn't serve the earlier preview.
+func TestS3PreviewsCustomNameReuse(t *testing.T) {
+	fake := &fakeS3{objects: map[string][]byte{}}
+	s3srv := httptest.NewServer(fake)
+	defer s3srv.Close()
+	data := t.TempDir()
+	h := newS3Server(t, data, fake, s3srv.URL)
+	dir := t.TempDir()
+	a := makeVideo(t, dir, "a.mp4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart")
+	if up := h.upload("a.mp4", a, "hash", "clip.mp4"); up["hash"] != "clip.mp4" {
+		t.Fatalf("upload: %v", up)
+	}
+	old := h.get("/preview/clip.mp4")
+	waitFor(t, "preview in S3", func() bool { _, ok := fake.get(previewKeyPrefix("clip.mp4") + "clip.mp4_preview.jpg"); return ok })
+	os.Remove(filepath.Join(data, "clip.mp4", "clip.mp4")) // evicted, but its preview restored from S3 since
+
+	b := makeVideo(t, dir, "b.mp4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", "negate", "-c:a", "aac", "-movflags", "+faststart")
+	if up := h.upload("b.mp4", b, "hash", "clip.mp4"); up["hash"] != "clip.mp4" {
+		t.Fatalf("second upload: %v", up)
+	}
+	if r := h.get("/preview/clip.mp4"); r.code != 200 || bytes.Equal(r.body, old.body) {
+		t.Errorf("the new video got the earlier one's preview: %d", r.code)
+	}
+	waitFor(t, "earlier preview gone from S3", func() bool { _, ok := fake.get(previewKeyPrefix("clip.mp4") + "clip.mp4_preview.jpg"); return !ok })
 }

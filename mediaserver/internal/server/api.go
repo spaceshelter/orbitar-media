@@ -294,7 +294,7 @@ func (s *Server) claim(custom, ext string, w, h int) (string, *answer) {
 		if s.store.Exists(c) {
 			return "", &answer{hash: c, reason: "Custom hash already exists"}
 		}
-		s.dropPreviews(c) // of an earlier, evicted file under this name
+		s.reuseName(c)
 		return c, nil
 	}
 	name, err := s.newName(ext, w, h)

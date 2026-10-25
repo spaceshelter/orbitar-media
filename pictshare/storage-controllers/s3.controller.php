@@ -63,8 +63,7 @@ class S3Storage implements StorageController
 			++$count;
 			foreach ($objects['Contents'] as $object){
 				$lastkey = $object['Key'];
-				if(strpos($lastkey,'/')===false) // previews/<hash>/<name>: mediaserver's preview copies, not stored files
-					$items[] = $lastkey;
+				$items[] = $lastkey;
 			}
 
 			if($dev===true) echo "      Got ".($count*$keys)." files                  \r";
@@ -110,21 +109,5 @@ class S3Storage implements StorageController
 			'Bucket' => S3_BUCKET,
 			'Key'    => $hash
 		]);
-    }
-
-    // the preview copies mediaserver keeps of a video (previews/<hash>/<name>)
-    function deletePreviews($hash)
-    {
-		if(!$this->s3)$this->connect();
-
-		$objects = $this->s3->listObjectsV2([
-			'Bucket' => S3_BUCKET,
-			'Prefix' => 'previews/'.$hash.'/'
-		]);
-		foreach (($objects['Contents'] ?? []) as $object)
-			$this->s3->deleteObject([
-				'Bucket' => S3_BUCKET,
-				'Key'    => $object['Key']
-			]);
     }
 }

@@ -118,9 +118,7 @@ func (s *Server) deleteHash(ctx context.Context, hash string) {
 			log.Printf("delete %s from S3: %v", hash, err)
 		}
 		if store.Ext(hash) == "mp4" {
-			if err := s.s3.DeletePrefix(ctx, previewKeyPrefix(hash)); err != nil {
-				log.Printf("delete previews of %s from S3: %v", hash, err)
-			}
+			s.deletePreviewsFromS3(hash)
 		}
 	}
 }
