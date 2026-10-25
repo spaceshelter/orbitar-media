@@ -120,6 +120,10 @@ func (s *Server) deleteHash(ctx context.Context, hash string) {
 		if store.Ext(hash) == "mp4" {
 			s.deletePreviewFromS3(hash)
 		}
+		// a preview restored from S3 while that ran: removed here if it landed already, and
+		// rejected by the newer mark if it lands later
+		s.invalidated.add(hash)
+		_ = s.store.Delete(hash)
 	}
 }
 
