@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -106,7 +107,8 @@ const maxPreviewBytes = 20_000_000
 // S3 copy (or one restored earlier). false: not such a URL, or S3 doesn't have the preview; the
 // video is then restored and the preview rendered as usual.
 func (s *Server) servePreviewFromS3(w http.ResponseWriter, r *http.Request, hash string, segs []string) bool {
-	if !store.ValidName(hash) || store.Ext(hash) != "mp4" || !slices.Contains(segs, "preview") {
+	// "raw" wins over "preview" in handleVideo: the same URL must not change type with eviction
+	if !store.ValidName(hash) || store.Ext(hash) != "mp4" || !slices.Contains(segs, "preview") || slices.Contains(segs, "raw") {
 		return false
 	}
 	for _, seg := range segs {
@@ -118,15 +120,39 @@ func (s *Server) servePreviewFromS3(w http.ResponseWriter, r *http.Request, hash
 	if !ok {
 		return false
 	}
-	p := s.store.PreviewPath(hash, name)
-	if !fileExists(p) && !s.fetchFromS3(r.Context(), previewKeyPrefix(hash)+name, maxPreviewBytes,
-		func() bool { return s.s3Candidate(hash) },
+	if !fileExists(s.store.PreviewPath(hash, name)) && !s.fetchFromS3(r.Context(), previewKeyPrefix(hash)+name, maxPreviewBytes,
+		func() bool { return s.s3Candidate(hash) && !s.deleted.has(hash) },
 		func() bool { return fileExists(s.store.PreviewPath(hash, name)) },
-		func(tmp string) error { return s.store.PutPreview(tmp, hash, name) }) {
+		func(tmp string) error {
+			if err := s.store.PutPreview(tmp, hash, name); err != nil {
+				return err
+			}
+			if s.deleted.has(hash) { // deleted while it was downloading
+				_ = s.store.DropPreviews(hash)
+				return errors.New("deleted meanwhile")
+			}
+			return nil
+		}) {
 		return false
 	}
-	s.serveFile(w, r, p, "image/jpeg")
+	s.serveFile(w, r, s.store.PreviewPath(hash, name), "image/jpeg")
 	return true
+}
+
+// dropPreviews forgets the previews of a video stored under a name that was used before (a
+// custom name whose earlier file was evicted): they show the earlier video.
+func (s *Server) dropPreviews(hash string) {
+	if store.Ext(hash) != "mp4" {
+		return
+	}
+	_ = s.store.DropPreviews(hash)
+	if s.s3 != nil && !s.store.ReadOnly {
+		ctx, cancel := context.WithTimeout(s.bgCtx, time.Minute)
+		defer cancel()
+		if err := s.s3.DeletePrefix(ctx, previewKeyPrefix(hash)); err != nil {
+			log.Printf("s3: delete previews of %s: %v", hash, err)
+		}
+	}
 }
 
 type previewPut struct{ hash, name, path string }
@@ -148,12 +174,18 @@ func (s *Server) runPreviewUploads() {
 	for {
 		select {
 		case p := <-s.previewPuts:
-			if !s.store.Exists(p.hash) { // deleted meanwhile
+			if !s.store.Exists(p.hash) || s.deleted.has(p.hash) {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(s.bgCtx, time.Minute)
-			if err := s.s3.Put(ctx, previewKeyPrefix(p.hash)+p.name, p.path); err != nil && !os.IsNotExist(err) {
+			err := s.s3.Put(ctx, previewKeyPrefix(p.hash)+p.name, p.path)
+			if err != nil && !os.IsNotExist(err) {
 				log.Printf("s3: upload of preview %s: %v", p.path, err)
+			}
+			if err == nil && s.deleted.has(p.hash) { // deleted while it was uploading
+				if err := s.s3.DeletePrefix(ctx, previewKeyPrefix(p.hash)); err != nil {
+					log.Printf("s3: delete previews of %s: %v", p.hash, err)
+				}
 			}
 			cancel()
 		case <-s.bgCtx.Done():

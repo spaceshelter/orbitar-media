@@ -70,6 +70,7 @@ type Server struct {
 	restoreMu  sync.Mutex
 	restoring  map[string]*flight
 	misses     *missCache
+	deleted    *missCache // hashes deleted lately, so a preview download or upload in flight can't bring one back
 	s3Lookups  *rateLimiter
 	generating keyedMutex
 	bgWG       sync.WaitGroup
@@ -101,6 +102,7 @@ func New(cfg Config, st *store.Store, s3 *s3store.Client, codec *hashcodec.Codec
 		previewPuts:  make(chan previewPut, 64),
 		restoring:    map[string]*flight{},
 		misses:       newMissCache(20000, 10*time.Minute),
+		deleted:      newMissCache(20000, 15*time.Minute), // longer than a download (5 min) or upload (1 min) runs
 		s3Lookups:    newRateLimiter(10, 20),
 	}
 	s.bgCtx, s.bgCancel = context.WithCancel(context.Background())

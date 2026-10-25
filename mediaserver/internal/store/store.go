@@ -128,12 +128,13 @@ func (s *Store) PreviewPath(hash, name string) string {
 	return filepath.Join(s.Root, dir, name)
 }
 
-// PutPreview moves src to PreviewPath(hash, name).
+// PutPreview moves src into hash's restored previews as name (in read-only mode always to the
+// overlay).
 func (s *Store) PutPreview(src, hash, name string) error {
 	if !ValidName(hash) || strings.ContainsAny(name, "/\\") {
 		return fmt.Errorf("invalid preview %q of %q", name, hash)
 	}
-	dst := s.PreviewPath(hash, name)
+	dst := filepath.Join(s.writeRoot(), hash+".previews", name)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
@@ -264,10 +265,18 @@ func (s *Store) Delete(hash string) error {
 	if !ValidName(hash) {
 		return fmt.Errorf("invalid name %q", hash)
 	}
-	if err := os.RemoveAll(filepath.Join(s.Root, hash+".previews")); err != nil {
+	if err := s.DropPreviews(hash); err != nil {
 		return err
 	}
 	return os.RemoveAll(filepath.Join(s.Root, hash))
+}
+
+// DropPreviews removes the previews of hash restored from S3.
+func (s *Store) DropPreviews(hash string) error {
+	if !ValidName(hash) {
+		return fmt.Errorf("invalid name %q", hash)
+	}
+	return os.RemoveAll(filepath.Join(s.writeRoot(), hash+".previews"))
 }
 
 // FileSHA1 returns the hex sha1 of a file.

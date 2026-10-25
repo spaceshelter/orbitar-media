@@ -717,6 +717,9 @@ function deleteHash($hash)
     rrmdir(ROOT.DS.'data'.DS.$hash);
     //and mediaserver's pending S3 copy (a hard link, see mediaserver/internal/server/queue.go), so it can't re-upload it
     @unlink(ROOT.DS.'data'.DS.'.s3-pending'.DS.$hash);
+    //and the video previews mediaserver restored from S3 without the video (mediaserver/internal/store)
+    if(is_dir(ROOT.DS.'data'.DS.$hash.'.previews'))
+        rrmdir(ROOT.DS.'data'.DS.$hash.'.previews');
 
     //tell every storage controller to delete theirs as well
     $sc = getStorageControllers();
@@ -726,6 +729,10 @@ function deleteHash($hash)
         if($c->isEnabled()===true && $c->hashExists($hash))
         {
             $c->deleteFile($hash);
+        }
+        if($c->isEnabled()===true && method_exists($c,'deletePreviews') && endswith($hash,'.mp4'))
+        {
+            $c->deletePreviews($hash);
         }
         //delete encrypted file if it exists
         if($c->isEnabled()===true && defined('ENCRYPTION_KEY') && ENCRYPTION_KEY !='' && $c->hashExists($hash.'.enc'))

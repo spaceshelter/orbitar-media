@@ -282,6 +282,9 @@ func TestS3Previews(t *testing.T) {
 	// a preview S3 doesn't have yet: the video is restored, the frame rendered and uploaded
 	data3 := t.TempDir()
 	h3 := newS3Server(t, data3, fake, s3srv.URL)
+	if r := h3.get("/raw/preview/" + hash); r.code != 200 || r.hdr.Get("Content-Type") != "video/mp4" {
+		t.Errorf("raw wins over preview whether the video is local or not: %d %s", r.code, r.hdr.Get("Content-Type"))
+	}
 	if r := h3.get("/preview/200x100/" + hash); r.code != 200 {
 		t.Fatalf("rendered preview: %d", r.code)
 	}
