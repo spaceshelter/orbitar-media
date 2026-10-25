@@ -30,7 +30,7 @@ import (
 type Store struct {
 	Root string // data directory
 
-	// ReadOnly never writes to Root (side-by-side evaluation next to the PHP service): files
+	// ReadOnly never writes to Root (a second instance on a copy of the volume): files
 	// restored from S3 and generated variants go to Overlay instead, which is scratch space.
 	ReadOnly bool
 	Overlay  string
@@ -217,7 +217,7 @@ func (s *Store) Put(src, hash string) (string, error) {
 		return "", errors.New("empty file")
 	}
 	// link, unlike rename, fails when dst exists: of two writers racing for one name (two
-	// uploads, or a restore here and in the PHP service) only one publishes, and only that one
+	// uploads, or an upload and a restore) only one publishes, and only that one
 	// writes the delete code
 	if err := os.Link(tmp, dst); err != nil {
 		if os.IsExist(err) {

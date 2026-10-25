@@ -1,9 +1,10 @@
 # orbitar-media
 
 
-Self hosted media server for [Orbitar](https://github.com/spaceshelter/orbitar/), 
-based on the (patched) [Pictshare](https://github.com/HaschekSolutions/pictshare) at 
-[9a4a20f](https://github.com/HaschekSolutions/pictshare/commit/9a4a20fb413c4110dd05164d312539112fd8ebaf).
+Self hosted media server for [Orbitar](https://github.com/spaceshelter/orbitar/): Caddy in front of
+`mediaserver/`, a Go service (README there) that replaced a patched
+[PictShare](https://github.com/HaschekSolutions/pictshare) and keeps its URLs, storage layout and API.
+A cleanup service evicts the oldest files when the disk runs low; with S3 configured, they are restored on demand.
 
 ---
 
@@ -12,6 +13,7 @@ based on the (patched) [Pictshare](https://github.com/HaschekSolutions/pictshare
 1. Add local domain to `/etc/hosts`, e.g. `127.0.0.1 orbitar.media.local` 
 2. Copy `.env.sample` to `.env` and adjust values
 3. Run `docker compose up -d`
+4. Optionally `CLIENT_ID=... scripts/smoke-test.sh` (only against a stack without S3: it uploads test files)
 
 ## Next to Orbitar on one box
 
@@ -37,9 +39,6 @@ media.example.org, b.media.example.org, origin.media.example.org {
 Then set Orbitar's `MEDIA_HOSTING_URL=https://media.example.org` and `MEDIA_HOSTING_CLIENT_ID` to this stack's
 `CLIENT_ID`. S3 is optional (empty `S3_BUCKET` = local disk only; the cleanup service then deletes files for good when
 the disk runs low, see `REQUIRED_SPACE`).
-
-`BACKEND` in `.env` picks the server that gets the traffic: `php` (PictShare, default) or `go` (the rewrite in
-`mediaserver/`). Both always run; after changing it, `docker compose up -d` recreates only Caddy.
 
 Staging (`stage.orbitar.media` on Orbitar's staging box) is deployed this way by `.github/workflows/deploy-stage.yml`,
 with its `.env` in `/opt/deployment-specific-files-media/` and its own bucket. The runner can't create top-level

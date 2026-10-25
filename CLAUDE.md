@@ -4,10 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Self-hosted media server for [Orbitar](https://github.com/spaceshelter/orbitar/), based on a patched version of [PictShare](https://github.com/HaschekSolutions/pictshare). Handles upload, storage, and serving of images, videos (MP4), and text files with deduplication, EXIF stripping, and optional S3 backup.
+Self-hosted media server for [Orbitar](https://github.com/spaceshelter/orbitar/): `mediaserver/`, a Go service that
+replaced a patched [PictShare](https://github.com/HaschekSolutions/pictshare) (PHP, removed from the repo) and keeps
+its URLs, data layout, S3 keys and upload API. Handles upload, storage, and serving of images, videos (MP4), and text
+files with deduplication, EXIF stripping, and optional S3 backup.
 
-**Stack:** PHP 8.4 (Alpine 3.24 `php84`, needs >= 8.4.27 for PHP2Shell), ffmpeg 8.1, Nginx, Docker Compose, Caddy (reverse proxy).
-The AWS SDK is installed by Composer at image build (`storage-controllers/s3/composer.json` + `composer.lock`, S3 service only); `vendor/` is not committed.
+**Stack:** Go 1.26, libvips CLI, ffmpeg (Alpine 3.24), Caddy (reverse proxy), Docker Compose.
 
 ## Common Commands
 
@@ -17,6 +19,12 @@ cp .env.sample .env          # Configure environment (edit values)
 docker compose up -d         # Start all services
 docker compose build         # Rebuild images after changes
 docker compose logs -f       # View logs
+
+# Go tests (local Go is too old; the test stage has vips/ffmpeg/file)
+docker build -f mediaserver/Dockerfile --target test .
+
+# End-to-end smoke test (only against a stack WITHOUT S3: it uploads test files)
+CLIENT_ID=... BASE=https://orbitar.media.local scripts/smoke-test.sh
 
 # Validate configuration
 docker compose config        # Check docker-compose.yml syntax
@@ -42,9 +50,10 @@ curl -k -H "Client-ID: $CLIENT_ID" ...
 ```
 
 ### Container Access
-- Cannot connect directly to pictshare container IP from host (Docker network isolation)
+- Cannot connect directly to the mediaserver container IP from host (Docker network isolation)
 - Always go through Caddy at `https://orbitar.media.local`
-- For debugging inside container: `docker exec orbitar-media-pictshare-1 php -r '...'`
+- The local `.env` may point at the production bucket: blank the `S3_*` variables on the command line for local tests
+- The mediaserver image has a shell, `vips`, `ffmpeg`/`ffprobe`: `docker exec orbitar-media-mediaserver-1 ...`
 
 ### Testing Image Uploads
 ```bash
@@ -72,22 +81,21 @@ exiftool -Orientation=3 -n -overwrite_original temp.jpg
 
 ## Architecture
 
-Docker containers orchestrated via docker-compose.yml (plus `mediaserver`, the Go rewrite, see below):
+Docker containers orchestrated via docker-compose.yml:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Caddy (reverse proxy)                                      │
-│  - Routes traffic to pictshare                              │
+│  - Routes traffic to mediaserver                            │
 │  - Enforces Client-ID header on every /api/* request        │
 │  - Serves /static/ files                                    │
 └─────────────────────────┬───────────────────────────────────┘
                           │
 ┌─────────────────────────▼───────────────────────────────────┐
-│  PictShare (main PHP app)                                   │
-│  - Entry: index.php → inc/core.php                          │
-│  - Content controllers: pictshare/content-controllers/      │
-│  - Storage controllers: pictshare/storage-controllers/      │
-│  - API endpoints: pictshare/api/                            │
+│  mediaserver (Go)                                           │
+│  - Entry: mediaserver/cmd/mediaserver → internal/server     │
+│  - URL dispatch: internal/server/architect.go               │
+│  - Upload API: internal/server/api.go                       │
 └─────────────────────────┬───────────────────────────────────┘
                           │
 ┌─────────────────────────▼───────────────────────────────────┐
@@ -97,108 +105,73 @@ Docker containers orchestrated via docker-compose.yml (plus `mediaserver`, the G
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Key Code Paths
+### Key Code Paths (`mediaserver/`, table in its README)
 
-- **Entry point:** `pictshare/index.php` → `inc/core.php` (`architect()` function)
-- **API endpoints:** `pictshare/api/` (upload.php, geturl.php, info.php, pastebin.php, base64.php)
-- **Content handlers:** `pictshare/content-controllers/` (image/, video/, text/, url/)
-- **Storage backends:** `pictshare/storage-controllers/` (s3/, ftp.controller.php)
-- **Docker entrypoint:** `pictshare/docker/rootfs/start.sh` (generates config, adjusts PHP settings)
+- **Entry point:** `cmd/mediaserver/main.go` (env config) → `internal/server` (`architect()` dispatches URLs)
+- **API endpoints:** `internal/server/api.go` (upload.php, geturl.php, info.php)
+- **Images:** `internal/imaging` (vips), **video:** `internal/video` (ffprobe/ffmpeg), served by `internal/server/{image,video}.go`
+- **Storage:** `internal/store` (on-disk layout), `internal/s3store`, `internal/server/queue.go` (S3 upload queue)
+- **Text page assets:** `mediaserver/static/` (css/js/fonts)
 - **Cleanup logic:** `cleanup-service/cleanup.sh`
 
 ### File Processing Flow
 
 1. Upload received at `/api/upload.php`
 2. File validated and SHA1 hash computed for deduplication
-3. Routed to appropriate content controller (image/video/text)
-4. Stored locally in `data/` directory, optionally backed up to S3
+3. Handled by type (image/video/text)
+4. Stored locally in `data/<hash>/`, queued for the S3 copy
 5. Returns JSON with hash URL and delete code
 
 ## Video Pipeline (MP4)
 
-`pictshare/content-controllers/video/video.controller.php` decides per upload what browsers can play,
-using `ffprobe` (`planNormalization`). Target: H.264 up to High profile / level 5.2, 8-bit 4:2:0,
-progressive, even dimensions, AAC or MP3 audio, one video + at most one audio stream, `moov` before `mdat`.
+`mediaserver/internal/video` (ported from PictShare's `video.controller.php`) decides per upload what browsers can
+play, using `ffprobe`. Target: H.264 up to High profile / level 5.2, 8-bit 4:2:0, progressive, even dimensions, AAC or
+MP3 audio, one video + at most one audio stream, `moov` before `mdat`.
 
-- Compliant uploads are stored byte-for-byte (no `encoder`-tag heuristics any more).
+- Compliant uploads are stored byte-for-byte.
 - Container-only or audio-only problems (moov at the end, extra subtitle/data streams, AC-3/Opus audio)
   are fixed **synchronously during the upload** with `-c:v copy`, so the bytes behind a URL never change
   after the URL has been handed out.
 - Video transcodes (non-4:2:0, High 10 / 4:4:4, level > 5.2, > 4K or > 60 fps, odd dimensions, interlaced -> `yadif`)
-  still run in the background via `tools/re-encode_mp4.php <hash>` (capped by `MAX_CONCURRENT_VIDEO_HANDLERS`).
-  Transcodes emit High profile, CRF 23, and shrink the output to fit 3840x2160 / 60 fps (`fps=60`,
-  `scale=w='min(iw,3840)':h='min(ih,2160)':force_original_aspect_ratio=decrease`, never upscaling) so the result stays
-  within level 5.2; the trigger is pixel budget > 3840*2160, either side > 4096, *average* fps > 60, or a source level > 5.2 (the nominal
-  `r_frame_rate` never triggers, VFR sources inflate it, but it does pin `fps=` to the real rate during a transcode because
-  ffmpeg 4.4 pads VFR up to the nominal rate; still applied on 8.1, decisions unchanged); the ffmpeg 4.4 `fps` filter does not take expressions, so the caps are fixed values chosen
-  from the probe. `-map_chapters -1` keeps chapters from re-materialising as a data stream (which would fail the
-  stream-count check on every later scan). The output replaces the file atomically (`rename` inside `data/<hash>/`, per-process
-  temp name `<target>.<pid>.<rand>.tmp` so concurrent generators never share one), and the synchronous path registers the
-  new file's sha1 so re-uploads dedupe.
-- `tools/re-encode_mp4.php <hash>...` normalises given hashes (`altfolder` with an unset ALT_FOLDER refuses instead of
-  silently running on `data/`); the full scan needs an explicit `all` (plus `dryrun` to only
-  report) because every rewrite changes the bytes and the ETag while Bunny may still hold the old chunks. Unresolvable hash
-  arguments make it refuse rather than fall back to a scan; `altfolder` has the same gate. It refreshes the S3 copy after a rewrite.
-- Concurrency: `acquireConversionSlot($waitSeconds)` (flock on `tmp/video-slot-N.lock`, N = `MAX_CONCURRENT_VIDEO_HANDLERS`,
-  pre-created 0666 by `start.sh`) bounds ffmpeg runs across the upload-time remux, the background worker (which takes the
-  slot *before* probing, waits at most 600 s, then logs and exits non-zero) and gif->mp4. A pass that can open no slot file
-  is logged. `/<width>/` variants of the video itself return 404 (unauthenticated full transcode, nothing links to them), but
-  sized previews `/preview/<w>/<hash>.mp4` and `/preview/<w>x<h>/...` (the gallery thumbnails) are served as a scaled
-  first frame rendered from the original, cached as `<w>_<hash>_preview.jpg` (the name the old resize path produced). `mediaserver` also copies
-  the full-size preview to S3 (`previews/<hash>_preview.jpg`) and serves an evicted video's preview from there without
-  restoring the video. Capacity is reserved
-  *before* `storeFile()`: a busy upload is rejected with "System is busy" while nothing has been published yet, so there
-  is no rollback and no window in which a concurrent identical upload could dedupe onto a file that then disappears.
-  Admission for background transcodes probes the same slots (no more `ps aux | grep`). Lock files are chmod 0666; when
-  another user (root via `docker exec`) owns one it is opened read-only and flocked, never unlinked and recreated (that
-  would be a second inode, i.e. a duplicate slot). `addSha1` appends under flock.
-- Every generated file (normalised video, first-frame preview, gif->mp4, resized/rotated/filtered/webp image variants) is written to a temp name and `rename`d
-  into place; generation failures return 503 `no-store` instead of leaving an empty file that `file_exists()` would serve
-  forever. ffmpeg is run through `exec()`, never `system()`, so nothing can leak into the HTTP body.
-- Background workers log to `/var/log/nginx/pictshare/reencode.log` (pre-created and tailed by `start.sh`, so it shows
-  up in `docker logs`); upload-path `error_log()` calls surface through nginx's error log as `PHP message:` lines.
-- Interlace detection decodes the first 5 frames (`ffprobe -read_intervals %+#5`) because ffprobe 4.4 reports
+  still run in the background (`transcodeInBackground` in `internal/server/api.go`: waits at most 10 minutes for a
+  slot, then keeps the original). Transcodes emit High profile, CRF 23, and shrink the output to fit 3840x2160 / 60 fps
+  (never upscaling) so the result stays within level 5.2; the trigger is pixel budget > 3840*2160, either side > 4096,
+  *average* fps > 60, or a source level > 5.2 (the nominal `r_frame_rate` never triggers, VFR sources inflate it, but it
+  does pin `fps=` to the real rate during a transcode). `-map_chapters -1` keeps chapters from re-materialising as a
+  data stream (which would fail the stream-count check on every later scan). The output replaces the file atomically
+  and registers the new file's sha1 so re-uploads dedupe, then refreshes the S3 copy.
+- Concurrency: in-process semaphores, `MAX_CONCURRENT_VIDEO_HANDLERS` (ffmpeg: upload remux, transcodes, gif->mp4) and
+  `MAX_CONCURRENT_IMAGE_HANDLERS` (vips, previews). Capacity is reserved *before* the file is stored: a busy upload is
+  rejected with "System is busy" while nothing has been published yet.
+- `/<width>/` variants of the video itself return 404 (unauthenticated full transcode, nothing links to them), but
+  sized previews `/preview/<w>/<hash>.mp4` and `/preview/<w>x<h>/...` are served as a scaled first frame rendered from
+  the original, cached as `<w>_<hash>_preview.jpg` (the name PictShare's old resize path produced).
+- The full-size preview (`/preview/<hash>.mp4`, the only one Orbitar uses) is also copied to S3 as
+  `previews/<hash>_preview.jpg`; for an evicted video it is served from there without restoring the video
+  (mediaserver/README.md, "Video previews in S3").
+- Every generated file (normalised video, preview, gif->mp4, image variants) is written to a temp name and `rename`d
+  into place; generation failures return 503 `no-store` instead of leaving an empty file.
+- Interlace detection decodes the first 5 frames (`ffprobe -read_intervals %+#5`) because ffprobe reports
   `field_order=unknown` for most H.264 streams.
-- Every ffmpeg/ffprobe call goes through `VideoController::limited($cmd, $seconds)`: `ulimit -v` (`FFMPEG_MEMORY_LIMIT_MB`,
-  default 2560; a 4K x264 transcode peaks at ~1.9 GB virtual / 1.5 GB resident on 2 cores) plus `timeout -s KILL`
-  (probe 60 s, preview 120 s, upload remux 300 s, gif->mp4 600 s, background transcode 3600 s). A killed run shows up as
-  rc 9 in `exec()`; ffmpeg refusing at the memory cap exits 244.
-- `getVideoDimensions` returns *displayed* dimensions (rotation from the display matrix applied), which is what
-  the dimension-encoding hash should describe.
-- `isProperMP4` (upload type detection) still requires an MP4/MOV container with an H.264 stream; HEVC/AV1/WebM
-  uploads are rejected as before. Widening this needs a "processing" state or a CDN purge, see below.
+- Every ffmpeg/ffprobe/vips run goes through `internal/proc`: `ulimit -v` (`FFMPEG_MEMORY_LIMIT_MB`, default 2560, `VIPS_MEMORY_LIMIT_MB` for vips; a 4K
+  x264 transcode peaks at ~1.9 GB virtual / 1.5 GB resident on 2 cores) plus a kill timeout (probe 60 s, preview
+  120 s, upload remux 300 s, gif->mp4 600 s, background transcode 3600 s).
+- Video dimensions are *displayed* dimensions (rotation from the display matrix applied), which is what the
+  dimension-encoding hash should describe.
+- Upload type detection still requires an MP4/MOV container with an H.264 stream; HEVC/AV1/WebM uploads are
+  rejected. Widening this needs a "processing" state or a CDN purge, see below.
 
 ### Serving and caching
-- `serveMP4` opens the file first and derives size/ETag/Last-Modified from `fstat()` of that handle, so an atomic
+- Files are opened first and size/ETag/Last-Modified come from `Stat()` of that handle, so an atomic
   replacement cannot split one response across two versions.
-- `/raw`, previews and images send a strong `ETag` (inode-mtime-size, `statETag()` in `inc/core.php`) and
-  `Last-Modified`, answer `If-None-Match` / `If-Modified-Since` with 304, and honour `If-Range` (stale validator
-  => whole file, 200). Range parsing lives in `parseByteRange()`; suffix and open-ended ranges work, multi-range
-  is ignored (200), unsatisfiable ranges return 416 with `Content-Range: bytes */<size>`. Error responses (404/416/500/503)
+- `/raw`, previews and images send a strong `ETag` (inode-mtime-size, `statETag()` in `internal/server/serve.go`) and
+  `Last-Modified`; Range, If-Range, If-None-Match and If-Modified-Since are Go's `http.ServeContent`. Error responses
   carry `Cache-Control: no-store`.
-- The old code used the immutable hash as ETag and rewrote videos in place ~1-2 minutes after upload. Bunny CDN
+- The original PictShare code used the immutable hash as ETag and rewrote videos in place ~1-2 minutes after upload. Bunny CDN
   (`b.orbitar.media`) caches 5 MB chunks per URL and never revalidates them, so viewers got chunks of the original
   spliced with chunks of the re-encode: frozen players and 416s (incident of 2026-09-07). The synchronous remux
   removes that window for stream-copy cases; genuine background transcodes still need a Bunny purge of
   `/<hash>.mp4/raw` when they finish (not implemented, needs the Bunny API key).
-
-## Go rewrite (`mediaserver/`)
-
-A Go replacement for PictShare lives in `mediaserver/` (README there; plan in `REWRITE_PLAN.md`). Same URLs, data
-layout and S3 keys. `mediaserver` and `pictshare` always both run, writable, on the same volume; `BACKEND=php|go` in
-`.env` (default `php`, checked by the deploys) picks the one Caddy sends traffic to: `reverse_proxy {$BACKEND:php}`
-in `caddy/media.caddy`, `php` and `go` being network aliases. Switching recreates only Caddy (`docker compose up -d`).
-
-- Build/test from the repo root: `docker build -f mediaserver/Dockerfile --target test .` (local Go is too old; tests
-  need vips/ffmpeg/file, which the test stage installs).
-- `mediaserver/difftest/` compares it against the PHP stack with s3mock (never the real bucket; the local `.env`
-  points at the production bucket).
-- `mediaserver/difftest/replay.py` replays pictshare's access log against both (`--ranges N` adds the Range /
-  conditional checks on videos). `MEDIASERVER_*` overrides go on the command line, never into the prod `.env` (the
-  deploy checks its keys against `.env.sample`).
-- `?backend=go` on any URL (GET or `/api/*`) is sent to `mediaserver` by Caddy whatever `BACKEND` says, tagged
-  `X-Backend: go`. A query parameter, not a header or cookie, because Bunny keys its cache on the query string but
-  ignores headers and strips cookies. Bunny keeps those answers for a year, so add a cache-buster (`&v=2`) when retesting.
 
 ## Environment Variables
 
@@ -212,14 +185,19 @@ Key variables in `.env` (see `.env.sample`):
 | `HASH_DIMS_AES_KEY` | AES key for encoding dimensions in hash |
 | `S3_BUCKET/REGION/ACCESS_KEY/SECRET_KEY` | S3 backup configuration |
 | `REQUIRED_SPACE` | Minimum free GB before cleanup runs (default: 10) |
-| `PHP_MEMORY_LIMIT` | MB per PHP request (default 256: PHP 8.4's GD needs a second full-size buffer for large PNG decode / WebP encode) |
+| `MAX_CONCURRENT_VIDEO_HANDLERS` | Parallel ffmpeg runs (default 2) |
 | `FFMPEG_MEMORY_LIMIT_MB` | `ulimit -v` per ffmpeg/ffprobe run (default 2560) |
 | `MASTER_DELETE_CODE` / `MASTER_DELETE_IP` | Optional admin delete; empty means disabled |
 
+`MEDIASERVER_*` overrides (`READ_ONLY`, `TOUCH_ON_ACCESS_MINUTES`, `IMAGE_HANDLERS`) go on the command line, never into
+the prod `.env`: the deploys check that its keys match `.env.sample`. Full list in mediaserver/README.md.
+
 ## CI/CD
 
-- **build.yml:** Validates docker-compose.yml and builds images on push/PR to main
-- **deploy-prod.yml:** Production deployment workflow
+- **build.yml:** On push to main and every PR: validates compose and Caddy configs and builds the images
+  (`build-docker`), and runs the Go tests (`mediaserver-test`, the Dockerfile's `test` stage)
+- **deploy-prod.yml:** Production deployment workflow (environment `Media`). Deploys run
+  `docker compose up -d --build --force-recreate --remove-orphans`.
 - **deploy-stage.yml:** Staging (`stage.orbitar.media`) on Orbitar's staging box, behind Orbitar's Caddy
   (`docker-compose.colocated.yml`, README "Next to Orbitar on one box"). Runner label `stage`, environment
   `MediaStaging`, `.env` from `/opt/deployment-specific-files-media/` (bucket `orbitar-media-stage`, never the prod one).
@@ -227,20 +205,17 @@ Key variables in `.env` (see `.env.sample`):
 
 ## API Quick Reference
 
-Every request to `/api/*`, any method, requires `Authorization: Client-ID <value>` (enforced by Caddy; `geturl.php` checks it again itself).
+Every request to `/api/*`, any method, requires `Authorization: Client-ID <value>` (enforced by Caddy, and again by mediaserver).
 
 ```bash
 # Upload file
 curl -k -H "Authorization: Client-ID $CLIENT_ID" -F "file=@image.jpg" https://orbitar.media.local/api/upload.php
 
-# Upload from URL (server-side fetch: needs Client-ID, checked by Caddy and again in geturl.php)
+# Upload from URL (server-side fetch from public addresses only)
 curl -k -H "Authorization: Client-ID $CLIENT_ID" "https://orbitar.media.local/api/geturl.php?url=https://example.com/image.jpg"
 
 # Get file info (also needs Client-ID)
 curl -k -H "Authorization: Client-ID $CLIENT_ID" "https://orbitar.media.local/api/info.php?hash=abc123.jpg"
-
-# Create text paste
-curl -k -H "Authorization: Client-ID $CLIENT_ID" -F "api_paste_code=Hello" https://orbitar.media.local/api/pastebin.php
 ```
 
-See `pictshare/rtfm/` for comprehensive documentation (API.md, CONFIG.md, etc.).
+`/api/base64.php` and `/api/pastebin.php` are gone; URL grammar and differences from PictShare are in mediaserver/README.md.
