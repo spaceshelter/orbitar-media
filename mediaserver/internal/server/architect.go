@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -108,7 +109,7 @@ func (s *Server) deleteAllowed(r *http.Request, hash, code string) bool {
 }
 
 func (s *Server) deleteHash(ctx context.Context, hash string) {
-	s.invalidated.add(hash) // before anything is removed: see servePreviewFromS3 and runPreviewUploads
+	s.invalidated.add(hash) // before anything is removed: see restoreFromS3, servePreviewFromS3, uploadQueue.push
 	if err := s.store.Delete(hash); err != nil {
 		log.Printf("delete %s: %v", hash, err)
 	}
@@ -120,8 +121,8 @@ func (s *Server) deleteHash(ctx context.Context, hash string) {
 		if store.Ext(hash) == "mp4" {
 			s.deletePreviewFromS3(hash)
 		}
-		// a preview restored from S3 while that ran: removed here if it landed already, and
-		// rejected by the newer mark if it lands later
+		// a file or preview restored from S3 while that ran: removed here if it landed already,
+		// and rejected by the newer mark if it lands later
 		s.invalidated.add(hash)
 		_ = s.store.Delete(hash)
 	}
@@ -148,12 +149,17 @@ func (s *Server) s3Candidate(name string) bool {
 // restoreFromS3 pulls name into the data directory when S3 has it.
 func (s *Server) restoreFromS3(ctx context.Context, name string) bool {
 	maxBytes := int64(max(s.cfg.MaxUploadMB, 1)) * 1_000_000 * 4 // originals are bounded by the upload limit
+	start := time.Now()
 	return s.fetchFromS3(ctx, name, maxBytes, func() bool { return s.s3Candidate(name) },
 		func() bool { return s.store.Exists(name) },
 		func(tmp string, meta map[string]string) error {
 			// the uploader's delete code travels with the S3 copy (absent on copies made before it did)
 			if _, err := s.store.Put(tmp, name, meta[s3DeleteCode]); err != nil && err != store.ErrExists {
 				return err
+			}
+			if s.invalidated.since(name, start) { // deleted while it was downloading
+				_ = s.store.Delete(name)
+				return errors.New("deleted meanwhile")
 			}
 			return nil
 		})

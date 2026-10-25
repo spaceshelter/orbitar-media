@@ -160,14 +160,14 @@ func TestS3QueueAndRestore(t *testing.T) {
 	}
 
 	// names this service can't have produced never reach S3; misses are remembered
-	before := fake.gets
+	gets := fake.gets
 	for _, p := range []string{"/../etc/passwd", "/x.php", "/2BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.jpg", "/" + strings.Repeat("a", 80) + ".jpg"} {
 		if r := h2.get(p); r.code != 404 {
 			t.Errorf("%s: %d", p, r.code)
 		}
 	}
-	if fake.gets != before {
-		t.Errorf("invalid names were looked up in S3 (%d requests)", fake.gets-before)
+	if fake.gets != gets {
+		t.Errorf("invalid names were looked up in S3 (%d requests)", fake.gets-gets)
 	}
 	h2.get("/abcdefgh.jpg")
 	n := fake.gets
@@ -177,6 +177,7 @@ func TestS3QueueAndRestore(t *testing.T) {
 	}
 
 	// delete removes the S3 copy too
+	before := time.Now()
 	up := h.upload("b.png", pngBytes(31, 31))
 	waitFor(t, "second upload", func() bool { _, ok := fake.get(up["hash"].(string)); return ok })
 	if r := h.get("/delete_" + up["delete_code"].(string) + "/" + up["hash"].(string)); r.code != 200 {
@@ -184,6 +185,11 @@ func TestS3QueueAndRestore(t *testing.T) {
 	}
 	if _, ok := fake.get(up["hash"].(string)); ok {
 		t.Error("S3 copy survived the delete")
+	}
+	// a push from work that began before the delete (a transcode finishing late) is dropped
+	h.s.queue.push(up["hash"].(string), before)
+	if _, err := os.Stat(filepath.Join(data, ".s3-pending", up["hash"].(string))); !os.IsNotExist(err) {
+		t.Error("a deleted file was queued for S3 again")
 	}
 }
 

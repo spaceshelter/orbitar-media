@@ -138,6 +138,7 @@ func (s *Server) saveLimited(r io.Reader) (string, error) {
 // ingest is the part upload.php and geturl.php share: type detection, dedupe, the content
 // controller, then the extra answer fields and the S3 copy.
 func (s *Server) ingest(w http.ResponseWriter, r *http.Request, tmp string, allowed func(string) bool, unsupported func(any) []kv) {
+	start := time.Now()
 	typ, typOK := s.fileType(r.Context(), tmp)
 	var typJSON any = typ
 	if !typOK {
@@ -186,7 +187,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, tmp string, allo
 	if code := s.store.DeleteCode(ans.hash); code != "" {
 		fields = append(fields, kv{"delete_code", code}, kv{"delete_url", s.cfg.URL + "delete_" + code + "/" + ans.hash})
 	}
-	s.queue.push(ans.hash)
+	s.queue.push(ans.hash, start)
 	s.writeJSON(w, r, fields...)
 }
 
@@ -412,7 +413,7 @@ func (s *Server) transcodeInBackground(name string, plan *video.Plan) {
 		if sum, err := store.FileSHA1(path); err == nil {
 			s.store.AddSHA1(name, sum)
 		}
-		s.queue.push(name)
+		s.queue.push(name, start)
 	}()
 }
 

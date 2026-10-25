@@ -41,12 +41,18 @@ func newUploadQueue(s *Server) *uploadQueue {
 
 func (q *uploadQueue) enabled() bool { return q.s.s3 != nil && !q.s.store.ReadOnly }
 
-// push schedules hash for upload.
-func (q *uploadQueue) push(hash string) {
+// push schedules hash for upload, unless it was deleted since start (when the work that led to
+// the push began). Checked under q.mu: deleteHash marks the hash before it calls forget, so a
+// push either sees the mark or lands before forget, which then removes it.
+func (q *uploadQueue) push(hash string, start time.Time) {
 	if !q.enabled() {
 		return
 	}
 	q.mu.Lock()
+	if q.s.invalidated.since(hash, start) {
+		q.mu.Unlock()
+		return
+	}
 	q.writeMarker(hash)
 	q.pending[hash]++
 	if q.inflight == hash {
@@ -60,10 +66,20 @@ func (q *uploadQueue) push(hash string) {
 }
 
 // writeMarker links the stored file into the marker directory (an empty marker when linking
-// fails). Called with q.mu held, so the worker can't remove a marker it hasn't seen.
+// fails). Called with q.mu held, so the worker can't remove a marker it hasn't seen. The delete
+// code is saved first: a marker that links the file always has its code next to it, even when
+// the cleanup service evicts the directory right after the link.
 func (q *uploadQueue) writeMarker(hash string) {
-	if err := os.MkdirAll(q.dir, 0o755); err != nil {
+	if err := os.MkdirAll(q.codesDir(), 0o755); err != nil {
+		log.Printf("s3: marker directory: %v", err)
 		return
+	}
+	if code := q.s.store.DeleteCode(hash); code != "" {
+		if err := store.WriteAtomic(filepath.Join(q.codesDir(), hash), func(tmp string) error {
+			return os.WriteFile(tmp, []byte(code), 0o644)
+		}); err != nil {
+			log.Printf("s3: saving the delete code of %s: %v", hash, err)
+		}
 	}
 	marker := filepath.Join(q.dir, hash)
 	tmp := store.TempName(marker)
@@ -74,11 +90,6 @@ func (q *uploadQueue) writeMarker(hash string) {
 	}
 	if err := os.Rename(tmp, marker); err != nil {
 		os.Remove(tmp)
-	}
-	if code := q.s.store.DeleteCode(hash); code != "" && os.MkdirAll(q.codesDir(), 0o755) == nil {
-		_ = store.WriteAtomic(filepath.Join(q.codesDir(), hash), func(tmp string) error {
-			return os.WriteFile(tmp, []byte(code), 0o644)
-		})
 	}
 }
 
