@@ -67,15 +67,15 @@ type Server struct {
 
 	previewPuts chan previewPut // previews on their way to S3
 
-	restoreMu  sync.Mutex
-	restoring  map[string]*flight
-	misses     *missCache
-	deleted    *missCache // hashes deleted lately, so a preview download or upload in flight can't bring one back
-	s3Lookups  *rateLimiter
-	generating keyedMutex
-	bgWG       sync.WaitGroup
-	bgCtx      context.Context
-	bgCancel   context.CancelFunc
+	restoreMu   sync.Mutex
+	restoring   map[string]*flight
+	misses      *missCache
+	invalidated *missCache // hashes deleted or reused lately: a preview download or upload in flight that started earlier mustn't bring the old one back
+	s3Lookups   *rateLimiter
+	generating  keyedMutex
+	bgWG        sync.WaitGroup
+	bgCtx       context.Context
+	bgCancel    context.CancelFunc
 }
 
 // New wires a server. s3 may be nil (no S3), codec may be nil (random names).
@@ -102,7 +102,7 @@ func New(cfg Config, st *store.Store, s3 *s3store.Client, codec *hashcodec.Codec
 		previewPuts:  make(chan previewPut, 64),
 		restoring:    map[string]*flight{},
 		misses:       newMissCache(20000, 10*time.Minute),
-		deleted:      newMissCache(20000, 15*time.Minute), // longer than a download (5 min) or upload (1 min) runs
+		invalidated:  newMissCache(20000, 15*time.Minute), // longer than a download (5 min) or upload (1 min) runs
 		s3Lookups:    newRateLimiter(10, 20),
 	}
 	s.bgCtx, s.bgCancel = context.WithCancel(context.Background())
@@ -407,6 +407,14 @@ func (m *missCache) has(k string) bool {
 		return false
 	}
 	return ok
+}
+
+// since reports whether k was added at or after t (and hasn't expired).
+func (m *missCache) since(k string, t time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	at, ok := m.seen[k]
+	return ok && time.Since(at) <= m.ttl && !at.Before(t)
 }
 
 func (m *missCache) add(k string) {

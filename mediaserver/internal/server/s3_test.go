@@ -40,19 +40,6 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	if prefix := r.URL.Query().Get("prefix"); r.URL.Query().Get("list-type") == "2" {
-		var b strings.Builder
-		b.WriteString(`<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated>`)
-		for k := range f.objects {
-			if strings.HasPrefix(k, prefix) {
-				b.WriteString("<Contents><Key>" + k + "</Key></Contents>")
-			}
-		}
-		b.WriteString("</ListBucketResult>")
-		w.Header().Set("Content-Type", "application/xml")
-		_, _ = io.WriteString(w, b.String())
-		return
-	}
 	switch r.Method {
 	case http.MethodPut:
 		b, _ := io.ReadAll(r.Body)
@@ -236,8 +223,8 @@ func TestS3RestoreCustomName(t *testing.T) {
 	}
 }
 
-// Video previews go to S3 when rendered, and an instance without the video serves them from there
-// instead of restoring the video and rendering a frame.
+// The full-size video preview goes to S3 when rendered, and an instance without the video serves
+// it from there instead of restoring the video and rendering a frame.
 func TestS3Previews(t *testing.T) {
 	fake := &fakeS3{objects: map[string][]byte{}}
 	s3srv := httptest.NewServer(fake)
@@ -246,62 +233,57 @@ func TestS3Previews(t *testing.T) {
 	vid := makeVideo(t, t.TempDir(), "v.mp4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart")
 	up := h.upload("v.mp4", vid)
 	hash := up["hash"].(string)
-	full, sized := previewKeyPrefix(hash)+hash+"_preview.jpg", previewKeyPrefix(hash)+"160_"+hash+"_preview.jpg"
-	r1, r2 := h.get("/preview/"+hash), h.get("/preview/160/"+hash)
-	if r1.code != 200 || r2.code != 200 {
-		t.Fatalf("previews: %d %d", r1.code, r2.code)
+	prev := h.get("/preview/" + hash)
+	if prev.code != 200 || h.get("/preview/160/"+hash).code != 200 {
+		t.Fatalf("previews: %d", prev.code)
 	}
-	waitFor(t, "previews in S3", func() bool {
-		b1, ok1 := fake.get(full)
-		b2, ok2 := fake.get(sized)
-		return ok1 && ok2 && bytes.Equal(b1, r1.body) && bytes.Equal(b2, r2.body)
-	})
+	waitFor(t, "preview in S3", func() bool { b, ok := fake.get(previewKey(hash)); return ok && bytes.Equal(b, prev.body) })
 	waitFor(t, "video in S3", func() bool { _, ok := fake.get(hash); return ok })
+	fake.mu.Lock()
+	if len(fake.objects) != 2 {
+		t.Errorf("sized previews went to S3 too: %d objects", len(fake.objects))
+	}
+	fake.mu.Unlock()
 
 	// a second instance (evicted data directory) serves the preview without the video
 	data2 := t.TempDir()
 	h2 := newS3Server(t, data2, fake, s3srv.URL)
-	if r := h2.get("/preview/160/" + hash); r.code != 200 || !bytes.Equal(r.body, r2.body) {
+	if r := h2.get("/" + hash + "/preview/" + hash); r.code != 200 || !bytes.Equal(r.body, prev.body) {
 		t.Fatalf("preview from S3: %d", r.code)
 	}
 	if _, err := os.Stat(filepath.Join(data2, hash, hash)); !os.IsNotExist(err) {
 		t.Error("the video was restored for its preview")
 	}
 	n := fake.gets
-	if r := h2.get("/preview/160/" + hash); r.code != 200 || fake.gets != n {
+	if r := h2.get("/preview/" + hash); r.code != 200 || fake.gets != n {
 		t.Errorf("restored preview not served locally: %d, %d S3 requests", r.code, fake.gets-n)
 	}
-	// the video is restored when it's asked for, and the restored preview is still used
-	if r := h2.get("/raw/" + hash); r.code != 200 || !bytes.Equal(r.body, vid) {
-		t.Fatalf("raw after a preview restore: %d", r.code)
+	if r := h2.get("/raw/preview/" + hash); r.code != 200 || r.hdr.Get("Content-Type") != "video/mp4" || !bytes.Equal(r.body, vid) {
+		t.Errorf("raw wins over preview whether the video is local or not: %d %s", r.code, r.hdr.Get("Content-Type"))
 	}
-	if r := h2.get("/preview/160/" + hash); r.code != 200 || !bytes.Equal(r.body, r2.body) {
+	if r := h2.get("/preview/" + hash); r.code != 200 || !bytes.Equal(r.body, prev.body) {
 		t.Errorf("preview with the video back: %d", r.code)
 	}
 
-	// a preview S3 doesn't have yet: the video is restored, the frame rendered and uploaded
-	data3 := t.TempDir()
-	h3 := newS3Server(t, data3, fake, s3srv.URL)
-	if r := h3.get("/raw/preview/" + hash); r.code != 200 || r.hdr.Get("Content-Type") != "video/mp4" {
-		t.Errorf("raw wins over preview whether the video is local or not: %d %s", r.code, r.hdr.Get("Content-Type"))
-	}
-	if r := h3.get("/preview/200x100/" + hash); r.code != 200 {
+	// no copy in S3 yet: the video is restored, the frame rendered and uploaded
+	fake.mu.Lock()
+	delete(fake.objects, previewKey(hash))
+	fake.mu.Unlock()
+	if r := newS3Server(t, t.TempDir(), fake, s3srv.URL).get("/preview/" + hash); r.code != 200 {
 		t.Fatalf("rendered preview: %d", r.code)
 	}
-	waitFor(t, "rendered preview in S3", func() bool { _, ok := fake.get(previewKeyPrefix(hash) + "200_" + hash + "_preview.jpg"); return ok })
+	waitFor(t, "rendered preview in S3", func() bool { _, ok := fake.get(previewKey(hash)); return ok })
 
-	// delete removes the previews everywhere
+	// delete removes the preview everywhere
 	if r := h.get("/delete_" + up["delete_code"].(string) + "/" + hash); r.code != 200 {
 		t.Fatalf("delete: %d", r.code)
 	}
 	fake.mu.Lock()
-	for k := range fake.objects {
-		if strings.HasPrefix(k, hash) || strings.HasPrefix(k, previewKeyPrefix(hash)) {
-			t.Errorf("%s survived the delete", k)
-		}
+	if len(fake.objects) != 0 {
+		t.Errorf("objects survived the delete: %d", len(fake.objects))
 	}
 	fake.mu.Unlock()
-	if r := newS3Server(t, t.TempDir(), fake, s3srv.URL).get("/preview/160/" + hash); r.code != 404 {
+	if r := newS3Server(t, t.TempDir(), fake, s3srv.URL).get("/preview/" + hash); r.code != 404 {
 		t.Errorf("preview of a deleted video: %d", r.code)
 	}
 }
@@ -319,15 +301,16 @@ func TestS3PreviewsCustomNameReuse(t *testing.T) {
 		t.Fatalf("upload: %v", up)
 	}
 	old := h.get("/preview/clip.mp4")
-	waitFor(t, "preview in S3", func() bool { _, ok := fake.get(previewKeyPrefix("clip.mp4") + "clip.mp4_preview.jpg"); return ok })
+	waitFor(t, "preview in S3", func() bool { _, ok := fake.get(previewKey("clip.mp4")); return ok })
 	os.Remove(filepath.Join(data, "clip.mp4", "clip.mp4")) // evicted, but its preview restored from S3 since
 
 	b := makeVideo(t, dir, "b.mp4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", "negate", "-c:a", "aac", "-movflags", "+faststart")
 	if up := h.upload("b.mp4", b, "hash", "clip.mp4"); up["hash"] != "clip.mp4" {
 		t.Fatalf("second upload: %v", up)
 	}
-	if r := h.get("/preview/clip.mp4"); r.code != 200 || bytes.Equal(r.body, old.body) {
-		t.Errorf("the new video got the earlier one's preview: %d", r.code)
+	cur := h.get("/preview/clip.mp4")
+	if cur.code != 200 || bytes.Equal(cur.body, old.body) {
+		t.Errorf("the new video got the earlier one's preview: %d", cur.code)
 	}
-	waitFor(t, "earlier preview gone from S3", func() bool { _, ok := fake.get(previewKeyPrefix("clip.mp4") + "clip.mp4_preview.jpg"); return !ok })
+	waitFor(t, "the new preview in S3", func() bool { b, ok := fake.get(previewKey("clip.mp4")); return ok && bytes.Equal(b, cur.body) })
 }

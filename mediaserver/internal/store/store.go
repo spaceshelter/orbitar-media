@@ -113,6 +113,21 @@ func (s *Store) VariantPath(hash, name string) string {
 	return filepath.Join(s.Root, hash, name)
 }
 
+// FindVariant returns where the generated file name of hash is, "" when it doesn't exist (unlike
+// VariantPath, never creates anything).
+func (s *Store) FindVariant(hash, name string) string {
+	if !ValidName(hash) || strings.ContainsAny(name, "/\\") {
+		return ""
+	}
+	if p := filepath.Join(s.Root, hash, name); isFile(p) {
+		return p
+	}
+	if p := filepath.Join(s.Overlay, hash, name); s.ReadOnly && isFile(p) {
+		return p
+	}
+	return ""
+}
+
 // PutVariant moves src into place as the generated file name of hash (a video preview restored
 // from S3, possibly without the video; in read-only mode always to the overlay) and returns
 // where it went.

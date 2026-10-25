@@ -108,7 +108,7 @@ func (s *Server) deleteAllowed(r *http.Request, hash, code string) bool {
 }
 
 func (s *Server) deleteHash(ctx context.Context, hash string) {
-	s.deleted.add(hash) // before anything is removed: see servePreviewFromS3 and runPreviewUploads
+	s.invalidated.add(hash) // before anything is removed: see servePreviewFromS3 and runPreviewUploads
 	if err := s.store.Delete(hash); err != nil {
 		log.Printf("delete %s: %v", hash, err)
 	}
@@ -118,7 +118,7 @@ func (s *Server) deleteHash(ctx context.Context, hash string) {
 			log.Printf("delete %s from S3: %v", hash, err)
 		}
 		if store.Ext(hash) == "mp4" {
-			s.deletePreviewsFromS3(hash)
+			s.deletePreviewFromS3(hash)
 		}
 	}
 }
