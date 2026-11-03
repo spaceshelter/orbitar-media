@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -280,6 +281,68 @@ func TestS3RestoreCustomName(t *testing.T) {
 	// a copy without a delete code (made before they were kept in S3) gets a new one
 	if code := h.s.store.DeleteCode("my-logo.png"); len(code) != 32 {
 		t.Errorf("delete code of a restored file without one: %q", code)
+	}
+}
+
+// A restore doesn't belong to the request that started it: when that client hangs up while the
+// download waits for a slot, it gets a 503 (not a 404 that says the file doesn't exist), and the
+// download carries on for a request waiting for the same file and for the next one.
+func TestS3RestoreOutlivesTheRequest(t *testing.T) {
+	fake := &fakeS3{objects: map[string][]byte{"logo.png": pngBytes(200, 100)}}
+	s3srv := httptest.NewServer(fake)
+	defer s3srv.Close()
+	h := newS3Server(t, t.TempDir(), fake, s3srv.URL)
+	for range cap(h.s.restoreSlots) { // every download slot busy
+		h.s.restoreSlots <- struct{}{}
+	}
+
+	// the first request starts the download, and its client gives up while it waits for a slot
+	ctx, cancel := context.WithCancel(t.Context())
+	first := httptest.NewRecorder()
+	firstDone := make(chan struct{})
+	go func() {
+		h.s.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/logo.png", nil).WithContext(ctx))
+		close(firstDone)
+	}()
+	waitFor(t, "the download to be queued", func() bool {
+		h.s.restoreMu.Lock()
+		defer h.s.restoreMu.Unlock()
+		return len(h.s.restoring) == 1
+	})
+
+	// a second request, for a resized variant, waits for the same download
+	second := make(chan int, 1)
+	go func() {
+		res, err := http.Get(h.ts.URL + "/100/logo.png")
+		if err != nil {
+			second <- 0
+			return
+		}
+		res.Body.Close()
+		second <- res.StatusCode
+	}()
+	time.Sleep(200 * time.Millisecond) // let it reach the download
+
+	cancel()
+	<-firstDone
+	if first.Code != http.StatusServiceUnavailable || first.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("request whose client left: %d %q, want 503 no-store", first.Code, first.Header().Get("Cache-Control"))
+	}
+
+	for range cap(h.s.restoreSlots) {
+		<-h.s.restoreSlots
+	}
+	if code := <-second; code != 200 {
+		t.Errorf("request waiting for the same download: %d", code)
+	}
+	if !h.s.store.Exists("logo.png") {
+		t.Error("the download didn't finish after the first client left")
+	}
+	fake.mu.Lock()
+	gets := fake.gets
+	fake.mu.Unlock()
+	if gets != 1 {
+		t.Errorf("%d S3 downloads, want 1 shared", gets)
 	}
 }
 
