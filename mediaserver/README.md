@@ -40,7 +40,9 @@ timeout and `ulimit -v`, so a bad input can only fail its own request.
 - **Caching**: strong ETag (inode-mtime-size) and Last-Modified on files, `Cache-Control: public, max-age=31536000`
   on success, `no-store` on every error. Range, If-Range, If-None-Match and If-Modified-Since come from Go's `http.ServeContent`.
 - **S3**: on a local miss, the original is restored from the bucket. Dimension hashes must decrypt with the key,
-  other names are rate limited, misses are cached, and concurrent downloads are capped.
+  other names are rate limited, misses are cached, and concurrent downloads are capped (8 at a time, 512 queued).
+  Requests for the same file, or any variant of it, share one download. The download runs in the background, so
+  a client that hangs up gets a `503` (`no-store`), never a `404`, and the download still completes for everyone else.
   Uploads go to S3 from a background queue: a marker per pending file in `data/.s3-pending/` (which the
   cleanup service's `ls` doesn't see), retries with backoff, and a sweep at startup. The marker is a hard link to the
   file, so a copy still pending when the cleanup service evicts the directory is not lost. An S3 outage delays the

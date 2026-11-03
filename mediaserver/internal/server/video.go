@@ -118,20 +118,27 @@ func (s *Server) servePreviewFromS3(w http.ResponseWriter, r *http.Request, hash
 	name, _, _ := previewName(hash, "")
 	have := func() bool { return s.store.FindVariant(hash, name) != "" }
 	start := time.Now()
-	if !have() && !s.fetchFromS3(r.Context(), previewKey(hash), maxPreviewBytes,
-		func() bool { return s.s3Candidate(hash) }, have,
-		func(tmp string, _ map[string]string) error {
-			dst, err := s.store.PutVariant(tmp, hash, name)
-			if err != nil {
-				return err
-			}
-			if s.invalidated.since(hash, start) { // deleted while it was downloading
-				_ = os.Remove(dst)
-				return errors.New("invalidated meanwhile")
-			}
-			return nil
-		}) {
-		return false
+	if !have() {
+		ok, err := s.fetchFromS3(r.Context(), previewKey(hash), maxPreviewBytes,
+			func() bool { return s.s3Candidate(hash) }, have,
+			func(tmp string, _ map[string]string) error {
+				dst, err := s.store.PutVariant(tmp, hash, name)
+				if err != nil {
+					return err
+				}
+				if s.invalidated.since(hash, start) { // deleted while it was downloading
+					_ = os.Remove(dst)
+					return errors.New("invalidated meanwhile")
+				}
+				return nil
+			})
+		if err != nil {
+			s.plainError(w, http.StatusServiceUnavailable, "busy")
+			return true
+		}
+		if !ok {
+			return false
+		}
 	}
 	p := s.store.FindVariant(hash, name)
 	if p == "" {

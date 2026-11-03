@@ -58,7 +58,12 @@ func (s *Server) architect(w http.ResponseWriter, r *http.Request) {
 		if s.servePreviewFromS3(w, r, seg, segs) {
 			return
 		}
-		if s.restoreFromS3(r.Context(), seg) {
+		restored, err := s.restoreFromS3(r.Context(), seg)
+		if err != nil {
+			s.plainError(w, http.StatusServiceUnavailable, "busy")
+			return
+		}
+		if restored {
 			hash = seg
 			break
 		}
@@ -146,8 +151,8 @@ func (s *Server) s3Candidate(name string) bool {
 	return s.s3Lookups.allow()
 }
 
-// restoreFromS3 pulls name into the data directory when S3 has it.
-func (s *Server) restoreFromS3(ctx context.Context, name string) bool {
+// restoreFromS3 pulls name into the data directory when S3 has it (see fetchFromS3 for the error).
+func (s *Server) restoreFromS3(ctx context.Context, name string) (bool, error) {
 	maxBytes := int64(max(s.cfg.MaxUploadMB, 1)) * 1_000_000 * 4 // originals are bounded by the upload limit
 	start := time.Now()
 	return s.fetchFromS3(ctx, name, maxBytes, func() bool { return s.s3Candidate(name) },
@@ -166,26 +171,53 @@ func (s *Server) restoreFromS3(ctx context.Context, name string) bool {
 		})
 }
 
-// fetchFromS3 downloads key and hands the file and its S3 metadata to place. Concurrent requests for the same key
-// share one download, and at most cap(restoreSlots) downloads run at a time. candidate decides
-// whether key is worth a lookup at all, have whether it is already here.
-func (s *Server) fetchFromS3(ctx context.Context, key string, maxBytes int64, candidate, have func() bool, place func(tmp string, meta map[string]string) error) bool {
+// fetchFromS3 downloads key and hands the file and its S3 metadata to place, and reports whether
+// key is here now. Concurrent requests for the same key share one download, and at most
+// cap(restoreSlots) downloads run at a time. candidate decides whether key is worth a lookup at
+// all, have whether it is already here.
+//
+// The download doesn't belong to any request: a caller whose ctx ends stops waiting (the error is
+// ctx's, or errRestoresBusy when too many downloads are pending), but the download carries on, so
+// neither the other callers waiting for it nor the next request lose it.
+func (s *Server) fetchFromS3(ctx context.Context, key string, maxBytes int64, candidate, have func() bool, place func(tmp string, meta map[string]string) error) (bool, error) {
 	if s.s3 == nil || s.misses.has(key) {
-		return false
+		return false, nil
 	}
 	s.restoreMu.Lock()
-	if f, ok := s.restoring[key]; ok {
-		s.restoreMu.Unlock()
-		<-f.done
-		return f.ok
+	f, ok := s.restoring[key]
+	if !ok {
+		if !candidate() {
+			s.restoreMu.Unlock()
+			return false, nil
+		}
+		if len(s.restoring) >= maxPendingRestores {
+			s.restoreMu.Unlock()
+			return false, errRestoresBusy
+		}
+		f = &flight{done: make(chan struct{})}
+		if !s.goBackground(func() { s.runS3Download(key, maxBytes, f, have, place) }) { // shutting down
+			s.restoreMu.Unlock()
+			return false, errRestoresBusy
+		}
+		s.restoring[key] = f
 	}
-	if !candidate() {
-		s.restoreMu.Unlock()
-		return false
-	}
-	f := &flight{done: make(chan struct{})}
-	s.restoring[key] = f
 	s.restoreMu.Unlock()
+	select {
+	case <-f.done:
+		return f.ok, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+}
+
+// maxPendingRestores bounds the downloads queued for a slot: each holds a goroutine and,
+// once it runs, a temp file.
+const maxPendingRestores = 512
+
+var errRestoresBusy = errors.New("too many S3 downloads pending")
+
+// runS3Download is the work behind a flight (see fetchFromS3).
+func (s *Server) runS3Download(key string, maxBytes int64, f *flight, have func() bool, place func(tmp string, meta map[string]string) error) {
 	defer func() {
 		s.restoreMu.Lock()
 		delete(s.restoring, key)
@@ -195,34 +227,32 @@ func (s *Server) fetchFromS3(ctx context.Context, key string, maxBytes int64, ca
 
 	if have() {
 		f.ok = true
-		return true
+		return
 	}
 	select {
 	case s.restoreSlots <- struct{}{}:
-	case <-ctx.Done():
-		return false
+	case <-s.bgCtx.Done():
+		return
 	}
 	defer func() { <-s.restoreSlots }()
-	// detached from the request: a client hanging up must not leave half the work done
-	dctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(s.bgCtx, 5*time.Minute)
 	defer cancel()
 	tmp := store.TempName(filepath.Join(s.cfg.TmpDir, "s3-"+strings.ReplaceAll(key, "/", "_")))
-	meta, err := s.s3.Get(dctx, key, tmp, maxBytes)
+	meta, err := s.s3.Get(ctx, key, tmp, maxBytes)
 	if err == s3store.ErrNotFound {
 		s.misses.add(key)
-		return false
+		return
 	}
 	if err != nil {
 		log.Printf("s3 restore %s: %v", key, err)
-		return false
+		return
 	}
 	defer os.Remove(tmp)
 	if err := place(tmp, meta); err != nil {
 		log.Printf("s3 restore %s: %v", key, err)
-		return false
+		return
 	}
 	f.ok = true
-	return true
 }
 
 // flight is one S3 download that later requests for the same key wait for.
