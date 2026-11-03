@@ -190,14 +190,16 @@ func (s *Server) fetchFromS3(ctx context.Context, key string, maxBytes int64, ca
 			s.restoreMu.Unlock()
 			return false, nil
 		}
-		if len(s.restoring) >= maxPendingRestores || s.bgCtx.Err() != nil { // full, or shutting down
+		if len(s.restoring) >= maxPendingRestores {
 			s.restoreMu.Unlock()
 			return false, errRestoresBusy
 		}
 		f = &flight{done: make(chan struct{})}
+		if !s.goBackground(func() { s.runS3Download(key, maxBytes, f, have, place) }) { // shutting down
+			s.restoreMu.Unlock()
+			return false, errRestoresBusy
+		}
 		s.restoring[key] = f
-		s.bgWG.Add(1)
-		go s.runS3Download(key, maxBytes, f, have, place)
 	}
 	s.restoreMu.Unlock()
 	select {
@@ -216,7 +218,6 @@ var errRestoresBusy = errors.New("too many S3 downloads pending")
 
 // runS3Download is the work behind a flight (see fetchFromS3).
 func (s *Server) runS3Download(key string, maxBytes int64, f *flight, have func() bool, place func(tmp string, meta map[string]string) error) {
-	defer s.bgWG.Done()
 	defer func() {
 		s.restoreMu.Lock()
 		delete(s.restoring, key)

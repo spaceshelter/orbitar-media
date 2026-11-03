@@ -73,6 +73,7 @@ type Server struct {
 	invalidated *missCache // hashes deleted lately: a preview download or upload in flight that started earlier mustn't bring the old one back
 	s3Lookups   *rateLimiter
 	generating  keyedMutex
+	bgMu        sync.Mutex // orders goBackground against Shutdown
 	bgWG        sync.WaitGroup
 	bgCtx       context.Context
 	bgCancel    context.CancelFunc
@@ -121,13 +122,31 @@ func (s *Server) Start() {
 
 // Shutdown stops background work, waiting up to ctx for running jobs.
 func (s *Server) Shutdown(ctx context.Context) {
+	s.bgMu.Lock()
 	s.bgCancel()
+	s.bgMu.Unlock()
 	done := make(chan struct{})
 	go func() { s.bgWG.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-ctx.Done():
 	}
+}
+
+// goBackground runs f as background work that Shutdown waits for. It returns false, without
+// running f, once Shutdown has begun (a WaitGroup mustn't grow while it's being waited on).
+func (s *Server) goBackground(f func()) bool {
+	s.bgMu.Lock()
+	defer s.bgMu.Unlock()
+	if s.bgCtx.Err() != nil {
+		return false
+	}
+	s.bgWG.Add(1)
+	go func() {
+		defer s.bgWG.Done()
+		f()
+	}()
+	return true
 }
 
 var (

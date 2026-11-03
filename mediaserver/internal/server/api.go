@@ -392,9 +392,7 @@ func (s *Server) uploadVideo(ctx context.Context, tmp string) *answer {
 // transcodeInBackground replaces the stored file with a transcoded one when a slot frees up
 // (at most 10 minutes later), then refreshes the S3 copy.
 func (s *Server) transcodeInBackground(name string, plan *video.Plan) {
-	s.bgWG.Add(1)
-	go func() {
-		defer s.bgWG.Done()
+	started := s.goBackground(func() {
 		select {
 		case s.videoSlots <- struct{}{}:
 		case <-time.After(10 * time.Minute):
@@ -414,7 +412,10 @@ func (s *Server) transcodeInBackground(name string, plan *video.Plan) {
 			s.store.AddSHA1(name, sum)
 		}
 		s.queue.push(name, start)
-	}()
+	})
+	if !started {
+		log.Printf("transcode %s: shutting down, keeping the original", name)
+	}
 }
 
 // handleGetURL is /api/geturl.php: the server downloads a URL and stores it like an upload.
